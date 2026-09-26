@@ -305,35 +305,36 @@ def fetch_optional_enrichment(state, fixture, provisional):
             }
 
     injuries = []
-    # Injury calls are expensive on the free quota, so only enrich serious candidates.
-    if provisional >= 4.0 and not cache_fresh(state, "injuries", fid, INJURY_CACHE_HOURS):
+    # Free API-Football is 100 requests/day. The 30-minute schedule uses
+    # about 96 calls/day (48 live + 48 detail), so enrichment is capped.
+    today = datetime.now(timezone.utc).date().isoformat()
+    quota = state.setdefault("quota", {"date": today, "enrichment_calls": 0})
+    if quota.get("date") != today:
+        quota["date"] = today
+        quota["enrichment_calls"] = 0
+
+    if fid in enrichment["injuries"]:
+        injuries = enrichment["injuries"][fid].get("data") or []
+
+    if (
+        provisional >= 4.0
+        and not cache_fresh(state, "injuries", fid, INJURY_CACHE_HOURS)
+        and quota.get("enrichment_calls", 0) < 2
+    ):
         try:
             injuries = api_get("/injuries", {"fixture": fid})
             enrichment["injuries"][fid] = {
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "data": injuries,
             }
+            quota["enrichment_calls"] += 1
         except Exception as e:
             print(f"Sakatlık verisi alınamadı: {e}")
-    elif fid in enrichment["injuries"]:
-        injuries = enrichment["injuries"][fid].get("data") or []
 
-    venue_id = (fixture.get("fixture", {}).get("venue", {}) or {}).get("id")
+    # Fixture data already contains the venue name/city; avoid a separate
+    # /venues call on the free tier.
     venue = {}
-    if venue_id and provisional >= 4.0 and not cache_fresh(state, "venue", venue_id, VENUE_CACHE_HOURS):
-        try:
-            rows = api_get("/venues", {"id": venue_id})
-            venue = rows[0] if rows else {}
-            enrichment["venue"][str(venue_id)] = {
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "data": venue,
-            }
-        except Exception as e:
-            print(f"Stadyum verisi alınamadı: {e}")
-    elif str(venue_id) in enrichment["venue"]:
-        venue = enrichment["venue"][str(venue_id)].get("data") or {}
 
-    return weather, injuries, venue
 
 
 def send_discord(result):
