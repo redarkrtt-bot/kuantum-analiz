@@ -57,7 +57,6 @@ def candidate_score(fixture, state):
     minute = parse_minute(fixture)
     last = state.get("checked", {}).get(fid)
     age_bonus = 999 if last is None else 0
-    # Prefer matches not checked recently and those in the core 20-75 minute zone.
     core = 20 if 20 <= minute <= 75 else 0
     return age_bonus + core - (minute / 1000)
 
@@ -117,7 +116,6 @@ def analyze(fixture, stats_response):
     pressure_home = h_att * 0.30 + h_shots * 1.5 + h_sot * 3 + h_corners * 1.0 + h_pos * 0.05
     pressure_away = a_att * 0.30 + a_shots * 1.5 + a_sot * 3 + a_corners * 1.0 + a_pos * 0.05
 
-    # A conservative signal: multiple attacking indicators must agree.
     home_score = (
         (h_sot >= 3) * 2
         + (h_shots >= 7) * 1
@@ -186,6 +184,11 @@ def send_discord(result):
 
 
 def main():
+    test_payload = {"username": "Goal Radar", "content": "✅ TEST: Goal Radar Discord bağlantısı çalışıyor."}
+    test_response = requests.post(discord_webhook, json=test_payload, timeout=15)
+    test_response.raise_for_status()
+    print("Discord test mesajı gönderildi.")
+
     state = load_state()
 
     live = api_get("/fixtures", {"live": "all"})
@@ -218,7 +221,6 @@ def main():
 
     if result["signal"]:
         last_alert = state.setdefault("alerts", {}).get(fid)
-        # Aynı maç için 30 dakika içinde ikinci kez alarm gönderme.
         send_again = True
         if last_alert:
             try:
@@ -235,7 +237,6 @@ def main():
     else:
         print("Güçlü sinyal oluşmadı.")
 
-    # Eski state kayıtlarını küçült.
     cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 3
     for bucket in ("checked", "alerts"):
         for key in list(state.get(bucket, {})):
