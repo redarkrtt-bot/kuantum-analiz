@@ -9,20 +9,19 @@
     "1577487": "2026-09-26T09:42:19.373224+00:00",
     "1594387": "2026-09-26T09:42:19.548875+00:00",
     "1594385": "2026-09-26T09:42:19.713971+00:00",
-    "1566612": "2026-09-26T09:42:19.881007+00:00"
+    "1566612": "2026-09-26T09:42:19.881007+00:00",
+    "1637642": "2026-09-26T09:47:08.747797+00:00"
   },
   "alerts": {},
   "last_scan": {
-    "updated_at": "2026-09-26T09:42:21.099084+00:00",
+    "updated_at": "2026-09-26T09:47:08.747825+00:00",
     "live_matches": 48,
-    "candidates": 36,
-    "deep_scanned": 4,
-    "stats_available": 1,
-    "missing_stats": 3,
-    "strong_candidates": 0,
-    "selected_fixture": "1577487",
+    "candidates": 33,
+    "deep_scanned": 1,
+    "stats_available": 0,
+    "missing_stats": 1,
     "signal": false,
-    "quota_remaining": 38
+    "quota_remaining": 36
   },
   "enrichment": {
     "weather": {
