@@ -65,26 +65,43 @@ def total_goals(fixture):
 def candidate_score(fixture, state):
     fid = str(fixture["fixture"]["id"])
     minute = parse_minute(fixture)
-    last = state.get("checked", {}).get(fid)
     now = datetime.now(timezone.utc)
-    freshness_penalty = 0.0
-    if last:
+    checked = state.get("checked", {})
+    failed = state.get("stats_failed", {})
+    recent = state.get("recent_analysis", {})
+
+    def age_minutes(bucket):
+        value = bucket.get(fid)
+        if not value:
+            return None
         try:
-            age_min = (now - datetime.fromisoformat(last)).total_seconds() / 60
-            if age_min < 30:
-                # A match whose stats just failed should not monopolize the
-                # next scan. Give another live match the API call instead.
-                return -1000.0
-            elif age_min < 60:
-                freshness_penalty = 8.0
-            elif age_min < 90:
-                freshness_penalty = 2.0
+            return (now - datetime.fromisoformat(value)).total_seconds() / 60
+        except Exception:
+            return None
+
+    checked_age = age_minutes(checked)
+    failed_age = age_minutes(failed)
+    recent_item = recent.get(fid, {})
+    recent_age = None
+    if recent_item.get("updated_at"):
+        try:
+            recent_age = (now - datetime.fromisoformat(recent_item["updated_at"])).total_seconds() / 60
         except Exception:
             pass
-    phase_bonus = 8.0 if 45 <= minute <= 78 else 3.0
-    score_bonus = 3.0 if total_goals(fixture) <= 1 else 0.0
-    unseen_bonus = 6.0 if last is None else 0.0
-    return phase_bonus + score_bonus + unseen_bonus - freshness_penalty - (minute / 1000)
+
+    if failed_age is not None and failed_age < 120:
+        return -5000.0
+    if checked_age is not None and checked_age < 35:
+        return -3000.0
+
+    phase_bonus = 10.0 if 50 <= minute <= 82 else 5.0
+    score_bonus = 5.0 if total_goals(fixture) == 0 else 3.0 if total_goals(fixture) == 1 else 0.0
+    late_bonus = 4.0 if minute >= 65 else 0.0
+    unseen_bonus = 8.0 if checked_age is None else 0.0
+    cached_pressure = float(recent_item.get("pressure", 0.0) or 0.0)
+    cache_bonus = min(cached_pressure / 4.0, 12.0) if recent_age is not None and recent_age < 90 else 0.0
+    freshness = 0.0 if checked_age is None else min(12.0, checked_age / 8.0)
+    return phase_bonus + score_bonus + late_bonus + unseen_bonus + cache_bonus + freshness - (minute / 1000)
 
 
 def extract_stats(stats_response):
@@ -433,6 +450,11 @@ def send_discord(result):
 
 def main():
     state = load_state()
+    state.setdefault("checked", {})
+    state.setdefault("alerts", {})
+    state.setdefault("enrichment", {})
+    state.setdefault("stats_failed", {})
+    state.setdefault("recent_analysis", {})
 
     live = api_get("/fixtures", {"live": "all"})
     candidates = [
@@ -489,15 +511,33 @@ def main():
         try:
             stats_response = api_get("/fixtures/statistics", {"fixture": fid})
             checked_details += 1
-            state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            state.setdefault("checked", {})[fid] = now_iso
 
             if not stats_response:
                 missing_stats.append(fid)
-                print(f"İSTATİSTİK YOK: {fid} — bu lig/maç için canlı istatistik gelmedi.")
+                state.setdefault("stats_failed", {})[fid] = now_iso
+                print(f"İSTATİSTİK YOK: {fid} — 120 dk rotasyon dışı.")
                 continue
+
+            state.setdefault("stats_failed", {}).pop(fid, None)
 
             provisional = analyze(fixture, stats_response)
             analyzed.append((fixture, stats_response, provisional))
+            state.setdefault("recent_analysis", {})[fid] = {
+                "updated_at": now_iso,
+                "pressure": round(
+                    max(provisional["pressure_home"], provisional["pressure_away"])
+                    + provisional["home_score"]
+                    + provisional["away_score"],
+                    2,
+                ),
+                "signal": bool(provisional["signal"]),
+                "minute": provisional["minute"],
+                "score": provisional["score"],
+                "home": provisional["home"],
+                "away": provisional["away"],
+            }
             print(
                 f"ADAY ANALİZİ: {provisional['home']} - {provisional['away']} | "
                 f"{provisional['minute']}' | kalite={provisional['data_quality']:.2f} | "
@@ -593,7 +633,7 @@ def main():
         print(f"SONUÇ: Alarm yok — {result['strength']} / {result['direction']} | analiz={len(analyzed)}/{checked_details}")
 
     cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 7
-    for bucket in ("checked", "alerts"):
+    for bucket in ("checked", "alerts", "stats_failed"):
         for key in list(state.get(bucket, {})):
             try:
                 dt = datetime.fromisoformat(state[bucket][key]).timestamp()
