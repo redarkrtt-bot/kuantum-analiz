@@ -30,6 +30,9 @@ jobs:
       - name: Install dependency
         run: pip install -r requirements-goal-bot.txt
 
+      - name: Validate Python syntax
+        run: python -m py_compile goal_bot.py
+
       - name: Run Goal Radar
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
