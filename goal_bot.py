@@ -18,6 +18,7 @@ discord_webhook = os.environ["DISCORD_WEBHOOK"]
 
 session = requests.Session()
 session.headers.update({"x-apisports-key": api_key})
+API_REMAINING = None
 
 
 def load_state():
@@ -34,7 +35,13 @@ def save_state(state):
 
 
 def api_get(path, params):
+    global API_REMAINING
     r = session.get(API_BASE + path, params=params, timeout=25)
+    remaining = r.headers.get("x-ratelimit-requests-remaining")
+    try:
+        API_REMAINING = int(remaining) if remaining is not None else API_REMAINING
+    except (TypeError, ValueError):
+        pass
     r.raise_for_status()
     data = r.json()
     if data.get("errors"):
@@ -380,9 +387,6 @@ def send_discord(result):
 def main():
     state = load_state()
 
-    # One live call gives us the global match list. Then fetch the top
-    # candidates in ONE batched fixture request (up to 20 IDs), instead of
-    # choosing one match and stopping when its statistics are missing.
     live = api_get("/fixtures", {"live": "all"})
     candidates = [
         f for f in live
@@ -398,7 +402,6 @@ def main():
         return
 
     candidates.sort(key=lambda f: candidate_score(f, state), reverse=True)
-
     preview = []
     for f in candidates[:10]:
         ht = f.get("teams", {}).get("home", {}).get("name", "?")
@@ -406,62 +409,85 @@ def main():
         preview.append(f"{ht}-{at} ({parse_minute(f)}')")
     print("ADAYLAR:", " | ".join(preview))
 
-    # API-Football supports up to 20 fixture IDs in one /fixtures request.
-    # This is the critical fix: missing statistics in the first match no
-    # longer aborts the entire scan.
-    batch = candidates[:20]
-    ids = "-".join(str(f["fixture"]["id"]) for f in batch)
-    detail_rows = api_get("/fixtures", {"ids": ids})
-    details_by_id = {
-        str(row.get("fixture", {}).get("id")): row
-        for row in detail_rows
-        if row.get("fixture", {}).get("id") is not None
-    }
-
-    analyzed = []
-    missing_stats = []
-    for fixture in batch:
-        fid = str(fixture["fixture"]["id"])
-        detailed = details_by_id.get(fid, fixture)
-        stats_response = detailed.get("statistics") or []
-
-        state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
-
-        if not stats_response:
-            missing_stats.append(fid)
-            continue
-
-        try:
-            provisional = analyze(detailed, stats_response)
-            analyzed.append((detailed, stats_response, provisional))
-        except Exception as e:
-            print(f"ANALİZ HATASI: {fid} | {e}")
-
-    print(
-        f"DERİN TARAMA: aday={len(batch)} | "
-        f"istatistikli={len(analyzed)} | istatistiksiz={len(missing_stats)}"
-    )
-
-    if not analyzed:
-        print(
-            "SONUÇ: Bu taramada analiz edilebilir canlı istatistik bulunamadı. "
-            f"İstatistiksiz maç={len(missing_stats)}"
+    # Free plans do not allow the multi-ID ids parameter. Inspect multiple
+    # candidates sequentially, while reserving quota for the pre-match radar.
+    reserve_for_prematch = 20
+    max_details_this_run = 2
+    if API_REMAINING is not None:
+        max_details_this_run = min(
+            max_details_this_run,
+            max(0, API_REMAINING - reserve_for_prematch),
         )
+
+    if max_details_this_run <= 0:
+        print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}; pre-match rezervi korunuyor.")
         state["last_scan"] = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "live_matches": len(live),
             "candidates": len(candidates),
-            "deep_scanned": len(batch),
+            "deep_scanned": 0,
             "stats_available": 0,
-            "missing_stats": len(missing_stats),
+            "missing_stats": 0,
             "signal": False,
+            "quota_remaining": API_REMAINING,
         }
         save_state(state)
         return
 
-    # Evaluate ALL detailed candidates first. Do not stop at the first match.
-    # Prefer an already-strong signal; otherwise keep the highest-pressure
-    # candidate for final contextual enrichment.
+    analyzed = []
+    missing_stats = []
+    checked_details = 0
+
+    for fixture in candidates[:8]:
+        if checked_details >= max_details_this_run:
+            break
+
+        fid = str(fixture["fixture"]["id"])
+        try:
+            detail_rows = api_get("/fixtures", {"id": fid})
+            detailed = detail_rows[0] if detail_rows else fixture
+            stats_response = detailed.get("statistics") or []
+            checked_details += 1
+            state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
+
+            if not stats_response:
+                missing_stats.append(fid)
+                print(f"İSTATİSTİK YOK: {fid} — sonraki adaya geçiliyor.")
+                continue
+
+            provisional = analyze(detailed, stats_response)
+            analyzed.append((detailed, stats_response, provisional))
+            print(
+                f"ADAY ANALİZİ: {provisional['home']} - {provisional['away']} | "
+                f"{provisional['minute']}' | kalite={provisional['data_quality']:.2f} | "
+                f"ev={provisional['home_score']:.2f} | dep={provisional['away_score']:.2f} | "
+                f"sinyal={provisional['signal']}"
+            )
+        except Exception as e:
+            checked_details += 1
+            print(f"DETAY HATASI: {fid} | {e}")
+
+    print(
+        f"DERİN TARAMA: kontrol={checked_details} | "
+        f"istatistikli={len(analyzed)} | istatistiksiz={len(missing_stats)} | "
+        f"kalan_kota={API_REMAINING}"
+    )
+
+    if not analyzed:
+        print("SONUÇ: Kontrol edilen adaylarda analiz edilebilir canlı istatistik yok.")
+        state["last_scan"] = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "live_matches": len(live),
+            "candidates": len(candidates),
+            "deep_scanned": checked_details,
+            "stats_available": 0,
+            "missing_stats": len(missing_stats),
+            "signal": False,
+            "quota_remaining": API_REMAINING,
+        }
+        save_state(state)
+        return
+
     strong = [item for item in analyzed if item[2]["signal"]]
     pool = strong if strong else analyzed
     pool.sort(
@@ -477,14 +503,11 @@ def main():
     print(
         f"SEÇİLEN: {provisional['home']} - {provisional['away']} | "
         f"{provisional['minute']}' | skor={provisional['score']} | "
-        f"ön_sinyal={provisional['signal']} | "
-        f"ev={provisional['home_score']:.2f} | dep={provisional['away_score']:.2f}"
+        f"ön_sinyal={provisional['signal']}"
     )
 
     provisional_score = max(provisional["home_score"], provisional["away_score"])
-    weather, injuries, venue = fetch_optional_enrichment(
-        state, detailed, provisional_score
-    )
+    weather, injuries, venue = fetch_optional_enrichment(state, detailed, provisional_score)
     result = analyze(detailed, stats_response, weather, injuries, venue)
 
     print(json.dumps(result, ensure_ascii=False))
@@ -500,12 +523,13 @@ def main():
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "live_matches": len(live),
         "candidates": len(candidates),
-        "deep_scanned": len(batch),
+        "deep_scanned": checked_details,
         "stats_available": len(analyzed),
         "missing_stats": len(missing_stats),
         "strong_candidates": len(strong),
         "selected_fixture": str(detailed["fixture"]["id"]),
         "signal": bool(result["signal"]),
+        "quota_remaining": API_REMAINING,
     }
 
     if result["signal"]:
@@ -515,9 +539,7 @@ def main():
         if last_alert:
             try:
                 last_dt = datetime.fromisoformat(last_alert)
-                send_again = (
-                    datetime.now(timezone.utc) - last_dt
-                ).total_seconds() >= 1800
+                send_again = (datetime.now(timezone.utc) - last_dt).total_seconds() >= 1800
             except Exception:
                 pass
         if send_again:
@@ -527,10 +549,7 @@ def main():
         else:
             print("Aynı maç için son alarm 30 dakikadan daha yeni.")
     else:
-        print(
-            f"SONUÇ: Alarm yok — {result['strength']} / {result['direction']} | "
-            f"tarama={len(analyzed)}/{len(batch)}"
-        )
+        print(f"SONUÇ: Alarm yok — {result['strength']} / {result['direction']} | analiz={len(analyzed)}/{checked_details}")
 
     cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 7
     for bucket in ("checked", "alerts"):
