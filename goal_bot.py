@@ -234,16 +234,17 @@ def analyze(fixture, stats_response, weather=None, injuries=None, venue=None):
     )
 
     strong_total = (
-        combined_sot >= 6
-        or (combined_sot >= 4 and combined_shots >= 14)
-        or (combined_sot >= 3 and combined_shots >= 10 and combined_corners >= 6)
+        combined_sot >= 5
+        or (combined_sot >= 4 and combined_shots >= 11)
+        or (combined_sot >= 3 and combined_shots >= 9 and combined_corners >= 4)
     )
-    late_scoreless = home_goals == 0 and away_goals == 0 and minute >= 58 and combined_sot >= 3
+    late_scoreless = home_goals == 0 and away_goals == 0 and minute >= 55 and combined_sot >= 3 and combined_shots >= 8
     one_goal_high_pressure = (
         home_goals + away_goals <= 1
-        and minute >= 52
+        and minute >= 50
         and combined_sot >= 4
-        and combined_shots >= 11
+        and combined_shots >= 10
+        and combined_corners >= 3
     )
 
     if data_quality < 0.50:
