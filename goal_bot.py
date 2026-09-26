@@ -71,10 +71,14 @@ def candidate_score(fixture, state):
     if last:
         try:
             age_min = (now - datetime.fromisoformat(last)).total_seconds() / 60
-            if age_min < 20:
-                freshness_penalty = 20.0
-            elif age_min < 45:
-                freshness_penalty = 5.0
+            if age_min < 30:
+                # A match whose stats just failed should not monopolize the
+                # next scan. Give another live match the API call instead.
+                return -1000.0
+            elif age_min < 60:
+                freshness_penalty = 8.0
+            elif age_min < 90:
+                freshness_penalty = 2.0
         except Exception:
             pass
     phase_bonus = 8.0 if 45 <= minute <= 78 else 3.0
