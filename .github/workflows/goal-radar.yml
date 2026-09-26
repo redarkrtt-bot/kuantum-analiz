@@ -1,8 +1,6 @@
 name: Goal Radar
 
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: "3,33 * * * *"
       timezone: "Europe/Berlin"
@@ -13,7 +11,7 @@ permissions:
 
 concurrency:
   group: goal-radar
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
