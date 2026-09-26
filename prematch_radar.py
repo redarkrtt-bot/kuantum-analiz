@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -175,6 +176,7 @@ def main():
     # One fixture-list call + one prediction call per run. This keeps the
     # free 100-request/day API-Football budget compatible with the 30-min live radar.
     fixtures = api_get("/fixtures", {"next": 20})
+    print(f"MAÇ ÖNÜ TARAMA: {len(fixtures)} yaklaşan maç alındı.")
     fixtures = [
         f for f in fixtures
         if (f.get("fixture", {}).get("status", {}) or {}).get("short") in {"NS", "TBD"}
@@ -183,15 +185,22 @@ def main():
         print("Yaklaşan uygun maç bulunamadı.")
         return
 
-    fixtures.sort(key=fixture_score, reverse=True)
-    fixture = fixtures[0]
-    fid = str(fixture["fixture"]["id"])
+    germany_now = datetime.now(ZoneInfo("Europe/Berlin"))
+    today = germany_now.date().isoformat()
 
-    # Avoid repeating the same fixture more than once per day.
-    today = datetime.now(timezone.utc).date().isoformat()
-    if state.get("prematch", {}).get(fid) == today:
-        print(f"Bu maç bugün zaten raporlandı: {fid}")
+    # Pick the nearest unreported fixture first.
+    unreported = [
+        f for f in fixtures
+        if state.get("prematch", {}).get(str(f["fixture"]["id"])) != today
+    ]
+    if not unreported:
+        print("Bugün raporlanmamış yaklaşan maç kalmadı.")
         return
+
+    unreported.sort(key=lambda f: f.get("fixture", {}).get("date", "9999"))
+    fixture = unreported[0]
+    fid = str(fixture["fixture"]["id"])
+    print(f"MAÇ ÖNÜ SEÇİLDİ: {fixture['teams']['home']['name']} - {fixture['teams']['away']['name']} | {fixture['fixture']['date']}")
 
     rows = api_get("/predictions", {"fixture": fid})
     if not rows:
