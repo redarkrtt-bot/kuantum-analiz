@@ -19,6 +19,7 @@ discord_webhook = os.environ["DISCORD_WEBHOOK"]
 session = requests.Session()
 session.headers.update({"x-apisports-key": api_key})
 API_REMAINING = None
+# Live radar: rotation + pressure-memory engine enabled.
 
 
 def load_state():
