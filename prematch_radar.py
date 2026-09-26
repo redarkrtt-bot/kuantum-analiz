@@ -17,8 +17,8 @@ session.headers.update({"x-apisports-key": API_KEY})
 
 MAX_DEEP_MATCHES_PER_DAY = 7
 FIXTURE_CACHE_HOURS = 8
-PREMATCH_MIN = 10
-PREMATCH_MAX = 20
+PREMATCH_MIN = 5
+PREMATCH_MAX = 25
 
 
 def load_state():
@@ -284,7 +284,7 @@ def main():
         if PREMATCH_MIN <= mins <= PREMATCH_MAX:
             candidates.append((mins, f))
 
-    print(f"15 DK RADARI: {len(candidates)} aday bulundu.")
+    print(f"MAÇ ÖNÜ RADARI: {len(candidates)} aday bulundu (T-{PREMATCH_MAX} ile T-{PREMATCH_MIN} dk arası).")
 
     if not candidates:
         return
