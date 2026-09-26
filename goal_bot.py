@@ -66,9 +66,21 @@ def candidate_score(fixture, state):
     fid = str(fixture["fixture"]["id"])
     minute = parse_minute(fixture)
     last = state.get("checked", {}).get(fid)
-    age_bonus = 999 if last is None else 0
-    core = 20 if 20 <= minute <= 75 else 0
-    return age_bonus + core - (minute / 1000)
+    now = datetime.now(timezone.utc)
+    freshness_penalty = 0.0
+    if last:
+        try:
+            age_min = (now - datetime.fromisoformat(last)).total_seconds() / 60
+            if age_min < 20:
+                freshness_penalty = 20.0
+            elif age_min < 45:
+                freshness_penalty = 5.0
+        except Exception:
+            pass
+    phase_bonus = 8.0 if 45 <= minute <= 78 else 3.0
+    score_bonus = 3.0 if total_goals(fixture) <= 1 else 0.0
+    unseen_bonus = 6.0 if last is None else 0.0
+    return phase_bonus + score_bonus + unseen_bonus - freshness_penalty - (minute / 1000)
 
 
 def extract_stats(stats_response):
@@ -202,18 +214,48 @@ def analyze(fixture, stats_response, weather=None, injuries=None, venue=None):
     raw_home = home_score + state_bonus - weather_penalty
     raw_away = away_score + state_bonus - weather_penalty
 
+    combined_shots = hc["shots"] + ac["shots"]
+    combined_sot = hc["sot"] + ac["sot"]
+    combined_attacks = hc["attacks"] + ac["attacks"]
+    combined_corners = hc["corners"] + ac["corners"]
+    combined_inside = hc["inside"] + ac["inside"]
+
+    # The alarm is for the NEXT goal, so pressure from both teams matters.
+    total_pressure = (
+        combined_sot * 1.8
+        + combined_shots * 0.45
+        + combined_attacks * 0.08
+        + combined_corners * 0.55
+        + combined_inside * 0.35
+    )
+
+    strong_total = (
+        combined_sot >= 6
+        or (combined_sot >= 4 and combined_shots >= 14)
+        or (combined_sot >= 3 and combined_shots >= 10 and combined_corners >= 6)
+    )
+    late_scoreless = home_goals == 0 and away_goals == 0 and minute >= 58 and combined_sot >= 3
+    one_goal_high_pressure = (
+        home_goals + away_goals <= 1
+        and minute >= 52
+        and combined_sot >= 4
+        and combined_shots >= 11
+    )
+
     if data_quality < 0.50:
         strength, signal = "VERİ YETERSİZ", False
         direction = "Yeterli canlı veri yok"
-    elif raw_home >= 4.0 and raw_home >= raw_away + 1.0:
+    elif strong_total or late_scoreless or one_goal_high_pressure:
         strength, signal = "GÜÇLÜ", True
-        direction = f"{home['name']} gol baskısı"
-    elif raw_away >= 4.0 and raw_away >= raw_home + 1.0:
-        strength, signal = "GÜÇLÜ", True
-        direction = f"{away['name']} gol baskısı"
-    elif max(raw_home, raw_away) >= 3.5 and abs(raw_home - raw_away) >= 0.5:
+        if raw_home >= raw_away + 1.0:
+            direction = f"{home['name']} gol baskısı"
+        elif raw_away >= raw_home + 1.0:
+            direction = f"{away['name']} gol baskısı"
+        else:
+            direction = "Çift taraflı yüksek gol baskısı"
+    elif total_pressure >= 13.0:
         strength, signal = "ORTA", False
-        direction = f"{home['name']} / {away['name']} baskı avantajı"
+        direction = "Orta seviyede toplam gol baskısı"
     else:
         strength, signal = "ZAYIF", False
         direction = "Belirgin gol baskısı yok"
@@ -409,18 +451,59 @@ def main():
         preview.append(f"{ht}-{at} ({parse_minute(f)}')")
     print("ADAYLAR:", " | ".join(preview))
 
-    # Free plans do not allow the multi-ID ids parameter. Inspect multiple
-    # candidates sequentially, while reserving quota for the pre-match radar.
-    reserve_for_prematch = 20
-    max_details_this_run = 4
+    # Free plan: one live fixture call + one direct statistics call per scan.
+    # /fixtures/statistics is the correct endpoint for live team statistics.
+    max_details_this_run = 1
     if API_REMAINING is not None:
-        max_details_this_run = min(
-            max_details_this_run,
-            max(0, API_REMAINING - reserve_for_prematch),
-        )
+        max_details_this_run = min(max_details_this_run, max(0, API_REMAINING))
 
     if max_details_this_run <= 0:
-        print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}; pre-match rezervi korunuyor.")
+        print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}.")
+        state["last_scan"] = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "live_matches": len(live),
+            "candidates": len(candidates),
+            "deep_scanned": 0,
+            "stats_available": 0,
+            "missing_stats": 0,
+            "signal": False,
+            "quota_remaining": API_REMAINING,
+        }
+        save_state(state)
+        return
+
+    analyzed = []
+    missing_stats = []
+    checked_details = 0
+
+    for fixture in candidates:
+        if checked_details >= max_details_this_run:
+            break
+
+        fid = str(fixture["fixture"]["id"])
+        try:
+            stats_response = api_get("/fixtures/statistics", {"fixture": fid})
+            checked_details += 1
+            state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
+
+            if not stats_response:
+                missing_stats.append(fid)
+                print(f"İSTATİSTİK YOK: {fid} — bu lig/maç için canlı istatistik gelmedi.")
+                continue
+
+            provisional = analyze(fixture, stats_response)
+            analyzed.append((fixture, stats_response, provisional))
+            print(
+                f"ADAY ANALİZİ: {provisional['home']} - {provisional['away']} | "
+                f"{provisional['minute']}' | kalite={provisional['data_quality']:.2f} | "
+                f"ev={provisional['home_score']:.2f} | dep={provisional['away_score']:.2f} | "
+                f"sinyal={provisional['signal']} | yön={provisional['direction']}"
+            )
+        except Exception as e:
+            checked_details += 1
+            print(f"İSTATİSTİK HATASI: {fid} | {e}")
+
+    print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}; pre-match rezervi korunuyor.")
         state["last_scan"] = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "live_matches": len(live),
@@ -474,7 +557,7 @@ def main():
     )
 
     if not analyzed:
-        print("SONUÇ: Kontrol edilen adaylarda analiz edilebilir canlı istatistik yok.")
+        print("SONUÇ: Seçilen aday için canlı istatistik verisi alınamadı; sonraki taramada başka aday seçilecek.")
         state["last_scan"] = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "live_matches": len(live),
