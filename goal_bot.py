@@ -334,7 +334,7 @@ def fetch_optional_enrichment(state, fixture, provisional):
     # Fixture data already contains the venue name/city; avoid a separate
     # /venues call on the free tier.
     venue = {}
-
+    return weather, injuries, venue
 
 
 def send_discord(result):
