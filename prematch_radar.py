@@ -1,18 +1,24 @@
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 
 API_BASE = "https://v3.football.api-sports.io"
-STATE_FILE = "state.json"
+STATE_FILE = "prematch_state.json"
+TZ = ZoneInfo("Europe/Berlin")
 
-api_key = os.environ["API_FOOTBALL_KEY"]
-discord_webhook = os.environ["DISCORD_WEBHOOK"]
+API_KEY = os.environ["API_FOOTBALL_KEY"]
+DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 
 session = requests.Session()
-session.headers.update({"x-apisports-key": api_key})
+session.headers.update({"x-apisports-key": API_KEY})
+
+MAX_DEEP_MATCHES_PER_DAY = 7
+FIXTURE_CACHE_HOURS = 8
+PREMATCH_MIN = 10
+PREMATCH_MAX = 20
 
 
 def load_state():
@@ -20,7 +26,7 @@ def load_state():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"checked": {}, "alerts": {}, "enrichment": {}, "prematch": {}}
+        return {"fixture_cache": {}, "analyses": {}, "sent": {}, "quota": {}}
 
 
 def save_state(state):
@@ -34,33 +40,131 @@ def api_get(path, params):
     data = r.json()
     if data.get("errors"):
         raise RuntimeError(str(data["errors"]))
-    return data.get("response", [])
+    return data.get("response", []), r.headers
 
 
-def num(v):
+def now_berlin():
+    return datetime.now(TZ)
+
+
+def parse_dt(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(TZ)
+
+
+def refresh_fixtures(state, now):
+    cache = state.get("fixture_cache", {})
+    cached_at = cache.get("cached_at")
+    if cached_at:
+        try:
+            age = now - datetime.fromisoformat(cached_at)
+            if age < timedelta(hours=FIXTURE_CACHE_HOURS):
+                return cache.get("fixtures", [])
+        except Exception:
+            pass
+
+    fixtures = []
+    for day in (now.date(), now.date() + timedelta(days=1)):
+        rows, _ = api_get("/fixtures", {
+            "date": day.isoformat(),
+            "timezone": "Europe/Berlin",
+        })
+        fixtures.extend(rows)
+
+    state["fixture_cache"] = {
+        "cached_at": now.isoformat(),
+        "fixtures": fixtures,
+    }
+    print(f"FIXTURE CACHE YENİLENDİ: {len(fixtures)} maç")
+    return fixtures
+
+
+def pct(v):
     try:
-        return float(str(v).replace("%", "").replace(",", "."))
+        return float(str(v).replace("%", ""))
     except Exception:
         return 0.0
 
 
-def pick(d, *keys):
-    for k in keys:
-        if isinstance(d, dict) and d.get(k) not in (None, "", "-"):
-            return d[k]
-    return None
+def prediction_score(pred):
+    p = pred.get("predictions", {}) or {}
+    percent = p.get("percent", {}) or {}
+    home = pct(percent.get("home"))
+    draw = pct(percent.get("draw"))
+    away = pct(percent.get("away"))
+    vals = sorted([home, draw, away], reverse=True)
+    edge = vals[0] - vals[1] if len(vals) > 1 else 0
+    goals = p.get("goals", {}) or {}
+    hg = pct((goals.get("home") or {}).get("total"))
+    ag = pct((goals.get("away") or {}).get("total"))
+    under_over = str(p.get("under_over") or "")
+    advice = str(p.get("advice") or "")
+
+    score = 0.0
+    score += min(vals[0], 70) * 0.55
+    score += min(edge, 35) * 0.65
+    score += 5 if "Over" in under_over else 0
+    score += 4 if "Under" in under_over else 0
+    score += 3 if advice else 0
+    if hg or ag:
+        score += min(hg + ag, 4) * 2
+
+    return {
+        "score": round(score, 2),
+        "home_pct": home,
+        "draw_pct": draw,
+        "away_pct": away,
+        "advice": advice,
+        "under_over": under_over,
+        "home_goals": (goals.get("home") or {}).get("total"),
+        "away_goals": (goals.get("away") or {}).get("total"),
+        "winner": ((p.get("winner") or {}).get("name") if isinstance(p.get("winner"), dict) else None),
+        "comparison": p.get("comparison", {}),
+    }
 
 
-def fixture_score(f):
-    league = f.get("league", {}) or {}
-    teams = f.get("teams", {}) or {}
-    # Prefer fixtures with both named teams, a known league and venue.
-    score = 0
-    score += 2 if teams.get("home", {}).get("name") and teams.get("away", {}).get("name") else 0
-    score += 1 if league.get("name") else 0
-    score += 1 if league.get("country") else 0
-    score += 1 if (f.get("fixture", {}).get("venue", {}) or {}).get("name") else 0
-    return score
+def odds_signal(odds_rows):
+    if not odds_rows:
+        return {"score": 0, "text": "Oran verisi yok", "agreement": 0}
+
+    prices = []
+    for row in odds_rows:
+        for book in row.get("bookmakers", []) or []:
+            for bet in book.get("bets", []) or []:
+                if str(bet.get("name", "")).lower() in {"match winner", "1x2"}:
+                    for val in bet.get("values", []) or []:
+                        try:
+                            prices.append((str(val.get("value")), float(val.get("odd"))))
+                        except Exception:
+                            pass
+
+    buckets = {"Home": [], "Draw": [], "Away": []}
+    for name, odd in prices:
+        key = "Home" if name in {"Home", "1"} else "Draw" if name in {"Draw", "X"} else "Away" if name in {"Away", "2"} else None
+        if key:
+            buckets[key].append(odd)
+
+    implied = {}
+    for k, arr in buckets.items():
+        if arr:
+            avg = sum(arr) / len(arr)
+            implied[k] = 1 / avg
+
+    total = sum(implied.values())
+    probs = {k: (v / total * 100) for k, v in implied.items()} if total else {}
+    if not probs:
+        return {"score": 0, "text": "1X2 oranı bulunamadı", "agreement": 0}
+
+    best = max(probs, key=probs.get)
+    confidence = probs[best]
+    text = f"Market: {best} %{confidence:.1f}"
+    return {"score": min(confidence / 8, 10), "text": text, "agreement": confidence}
+
+
+def enrichment(fixture):
+    fid = fixture["fixture"]["id"]
+    injuries, _ = api_get("/injuries", {"fixture": fid, "timezone": "Europe/Berlin"})
+    lineups, _ = api_get("/fixtures/lineups", {"fixture": fid})
+    return injuries, lineups
 
 
 def weather(city):
@@ -85,136 +189,178 @@ def weather(city):
             },
             timeout=10,
         ).json().get("current", {})
-        return {
-            "temperature": w.get("temperature_2m"),
-            "rain": w.get("rain"),
-            "snow": w.get("snowfall"),
-            "wind": w.get("wind_speed_10m"),
-        }
-    except Exception as e:
-        print(f"Hava verisi alınamadı: {e}")
+        return w
+    except Exception:
         return None
 
 
-def prediction_summary(p):
-    pred = p.get("predictions", {}) or {}
-    comparison = p.get("comparison", {}) or {}
-    goals = p.get("goals", {}) or {}
+def availability_text(injuries, lineups):
+    missing = []
+    for item in injuries or []:
+        player = (item.get("player") or {}).get("name", "Oyuncu")
+        reason = item.get("player", {}).get("reason") or item.get("reason") or "Belirsiz"
+        missing.append(f"{player} ({reason})")
 
-    home = pick(pred, "winner") or {}
-    advice = pick(pred, "advice", "win_or_draw", "under_over", "goals") or ""
-
-    percent = {}
-    for k, v in (pred.get("percent") or {}).items():
-        if v is not None:
-            percent[k] = v
-
-    # API-Football prediction responses commonly expose winner,
-    # advice, percentages, goals and a team comparison block.
-    return {
-        "winner": home.get("name") if isinstance(home, dict) else str(home),
-        "winner_comment": home.get("comment") if isinstance(home, dict) else "",
-        "advice": advice,
-        "percent": percent,
-        "home_goals": (goals.get("home") or {}),
-        "away_goals": (goals.get("away") or {}),
-        "comparison": comparison,
-        "form": p.get("teams", {}),
-        "league": p.get("league", {}),
-    }
+    lineup_text = "Kadrolar henüz kesinleşmemiş"
+    if lineups:
+        lineup_text = "İlk 11 verisi mevcut"
+    return ", ".join(missing[:8]) if missing else "Belirgin eksik bilgisi yok", lineup_text
 
 
-def send_discord(fixture, summary, wx):
+def send_discord(fixture, model, market, injuries, lineup_text, wx, minutes):
     teams = fixture.get("teams", {}) or {}
     league = fixture.get("league", {}) or {}
     fx = fixture.get("fixture", {}) or {}
     home = teams.get("home", {}).get("name", "?")
     away = teams.get("away", {}).get("name", "?")
-    date = fx.get("date", "?")
     venue = (fx.get("venue", {}) or {}).get("name", "Bilinmiyor")
     city = (fx.get("venue", {}) or {}).get("city", "")
-
-    pct = summary["percent"]
-    pct_text = " • ".join(f"{k}: {v}" for k, v in pct.items()) if pct else "Yüzde verisi yok"
-    hg = summary["home_goals"]
-    ag = summary["away_goals"]
-    goal_text = f"Ev gol: {hg} | Dep gol: {ag}" if hg or ag else "Gol dağılımı verisi yok"
+    referee = fx.get("referee") or "Bilinmiyor"
 
     weather_text = "Hava verisi yok"
     if wx:
         weather_text = (
-            f"{wx.get('temperature','?')}°C • yağış {wx.get('rain','?')}mm • "
-            f"rüzgar {wx.get('wind','?')}km/s"
+            f"{wx.get('temperature_2m','?')}°C | yağış {wx.get('rain','?')} mm | "
+            f"rüzgar {wx.get('wind_speed_10m','?')} km/s"
         )
+
+    score = model["score"] + market["score"]
+    if score >= 65:
+        strength = "ÇOK GÜÇLÜ"
+    elif score >= 52:
+        strength = "GÜÇLÜ"
+    else:
+        strength = "ORTA"
 
     payload = {
         "username": "Goal Radar",
         "embeds": [{
-            "title": "🧠 MAÇ ÖNÜ RADAR",
+            "title": "🧠 MAÇ ÖNÜ RADAR — 15 DK KALA",
             "description": (
-                f"**{home} – {away}**\n"
-                f"🏆 {league.get('name','Bilinmeyen Lig')} / {league.get('country','')}\n"
-                f"🕒 {date}\n"
-                f"🏟️ {venue} {('• ' + city) if city else ''}\n\n"
-                f"🎯 Model kazananı: **{summary['winner'] or 'Belirlenemedi'}** "
-                f"{summary['winner_comment']}\n"
-                f"📌 Tavsiye/senaryo: **{summary['advice'] or 'Belirlenemedi'}**\n"
-                f"📊 Olasılık dağılımı: {pct_text}\n"
-                f"⚽ Gol modeli: {goal_text}\n"
-                f"🌦️ {weather_text}\n\n"
-                "Not: Bu, maç önü model verilerinin özetidir; garanti sonuç değildir."
+                f"**{home} – {away}**
+"
+                f"🏆 {league.get('name','Bilinmeyen Lig')} / {league.get('country','')}
+"
+                f"⏳ Başlamasına yaklaşık **{minutes} dk**
+
+"
+                f"🎯 Sinyal gücü: **{strength}** ({score:.1f})
+"
+                f"🏆 Model yönü: **{model['winner'] or 'Belirlenemedi'}**
+"
+                f"📊 1X2 model: Ev %{model['home_pct']:.1f} | X %{model['draw_pct']:.1f} | Dep %{model['away_pct']:.1f}
+"
+                f"⚽ Gol senaryosu: **{model['under_over'] or 'Belirlenemedi'}**
+"
+                f"🔢 Tahmini goller: {model['home_goals'] or '?'} - {model['away_goals'] or '?'}
+"
+                f"📌 Model tavsiyesi: **{model['advice'] or 'Yok'}**
+"
+                f"💹 {market['text']}
+"
+                f"🏥 Eksikler: {injuries}
+"
+                f"👥 Kadro: {lineup_text}
+"
+                f"🌦️ {weather_text}
+"
+                f"🧑‍⚖️ Hakem: {referee}
+"
+                f"🏟️ Stadyum: {venue} {('• ' + city) if city else ''}
+
+"
+                "Bu skor bir olasılık/sinyal ölçümüdür; garanti değildir."
             ),
-            "footer": {"text": "Goal Radar • maç önü + canlı doğrulama sistemi"},
+            "footer": {"text": "Goal Radar • Berlin time • pre-match confirmation"},
         }]
     }
-    r = requests.post(discord_webhook, json=payload, timeout=15)
+    r = requests.post(DISCORD_WEBHOOK, json=payload, timeout=15)
     r.raise_for_status()
 
 
 def main():
     state = load_state()
-    # One fixture-list call + one prediction call per run. This keeps the
-    # free 100-request/day API-Football budget compatible with the 30-min live radar.
-    fixtures = api_get("/fixtures", {"next": 20})
-    print(f"MAÇ ÖNÜ TARAMA: {len(fixtures)} yaklaşan maç alındı.")
-    fixtures = [
-        f for f in fixtures
-        if (f.get("fixture", {}).get("status", {}) or {}).get("short") in {"NS", "TBD"}
-    ]
-    if not fixtures:
-        print("Yaklaşan uygun maç bulunamadı.")
+    now = now_berlin()
+    today = now.date().isoformat()
+
+    quota = state.setdefault("quota", {})
+    if quota.get("date") != today:
+        quota.clear()
+        quota.update({"date": today, "deep_matches": 0})
+
+    fixtures = refresh_fixtures(state, now)
+    save_state(state)
+
+    candidates = []
+    for f in fixtures:
+        status = (f.get("fixture", {}).get("status", {}) or {}).get("short")
+        if status not in {"NS", "TBD"}:
+            continue
+        dt = parse_dt(f["fixture"]["date"])
+        mins = (dt - now).total_seconds() / 60
+        if PREMATCH_MIN <= mins <= PREMATCH_MAX:
+            candidates.append((mins, f))
+
+    print(f"15 DK RADARI: {len(candidates)} aday bulundu.")
+
+    if not candidates:
         return
 
-    germany_now = datetime.now(ZoneInfo("Europe/Berlin"))
-    today = germany_now.date().isoformat()
+    analyses = state.setdefault("analyses", {})
+    sent = state.setdefault("sent", {})
 
-    # Pick the nearest unreported fixture first.
-    unreported = [
-        f for f in fixtures
-        if state.get("prematch", {}).get(str(f["fixture"]["id"])) != today
-    ]
-    if not unreported:
-        print("Bugün raporlanmamış yaklaşan maç kalmadı.")
+    scored = []
+    for mins, fixture in sorted(candidates, key=lambda x: x[0]):
+        fid = str(fixture["fixture"]["id"])
+        if sent.get(fid) == today:
+            continue
+        if analyses.get(fid, {}).get("date") == today:
+            scored.append((analyses[fid]["score"], mins, fixture, analyses[fid]["model"], analyses[fid]["market"]))
+            continue
+        if quota["deep_matches"] >= MAX_DEEP_MATCHES_PER_DAY:
+            continue
+
+        rows, _ = api_get("/predictions", {"fixture": fid})
+        if not rows:
+            continue
+        model = prediction_score(rows[0])
+
+        odds_rows, _ = api_get("/odds", {"fixture": fid})
+        market = odds_signal(odds_rows)
+
+        total = model["score"] + market["score"]
+        analyses[fid] = {"date": today, "score": round(total, 2), "model": model, "market": market}
+        quota["deep_matches"] += 1
+        scored.append((total, mins, fixture, model, market))
+
+    save_state(state)
+
+    if not scored:
+        print("Güçlü aday yok veya günlük derin analiz kotası doldu.")
         return
 
-    unreported.sort(key=lambda f: f.get("fixture", {}).get("date", "9999"))
-    fixture = unreported[0]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    total, mins, fixture, model, market = scored[0]
+
+    # Only enrich the strongest match: injuries + lineups are the expensive final confirmation.
     fid = str(fixture["fixture"]["id"])
-    print(f"MAÇ ÖNÜ SEÇİLDİ: {fixture['teams']['home']['name']} - {fixture['teams']['away']['name']} | {fixture['fixture']['date']}")
-
-    rows = api_get("/predictions", {"fixture": fid})
-    if not rows:
-        print(f"Tahmin verisi yok: {fid}")
-        return
-
-    summary = prediction_summary(rows[0])
+    injuries_raw, lineups = enrichment(fixture)
+    injuries, lineup_text = availability_text(injuries_raw, lineups)
     city = (fixture.get("fixture", {}).get("venue", {}) or {}).get("city") or ""
     wx = weather(city)
 
-    send_discord(fixture, summary, wx)
-    state.setdefault("prematch", {})[fid] = today
+    send_discord(fixture, model, market, injuries, lineup_text, wx, int(round(mins)))
+    sent[fid] = today
+    state["last_alert"] = {
+        "fixture": fid,
+        "home": fixture["teams"]["home"]["name"],
+        "away": fixture["teams"]["away"]["name"],
+        "minutes_before": round(mins, 1),
+        "score": round(total, 2),
+        "time": now.isoformat(),
+    }
     save_state(state)
-    print(f"Maç önü raporu gönderildi: {fid}")
+    print(f"MAÇ ÖNÜ ALARMI GÖNDERİLDİ: {fid} | skor={total:.1f} | T-{mins:.1f} dk")
 
 
 if __name__ == "__main__":
