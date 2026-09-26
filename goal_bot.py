@@ -457,7 +457,7 @@ def main():
 
     # Free plan: one live fixture call + one direct statistics call per scan.
     # /fixtures/statistics is the correct endpoint for live team statistics.
-    max_details_this_run = 3
+    max_details_this_run = 1
     if API_REMAINING is not None:
         max_details_this_run = min(max_details_this_run, max(0, API_REMAINING))
 
