@@ -224,7 +224,7 @@ def analyze(fixture, stats_response, weather=None, injuries=None, venue=None):
     combined_corners = hc["corners"] + ac["corners"]
     combined_inside = hc["inside"] + ac["inside"]
 
-    # The alarm is for the NEXT goal, so pressure from both teams matters.
+    # The alarm is for the NEXT goal; evaluate pressure from both teams.
     total_pressure = (
         combined_sot * 1.8
         + combined_shots * 0.45
