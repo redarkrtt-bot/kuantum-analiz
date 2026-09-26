@@ -3,7 +3,6 @@ name: Goal Radar
 on:
   schedule:
     - cron: "3,23,43 * * * *"
-      timezone: "Europe/Berlin"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +10,7 @@ permissions:
 
 concurrency:
   group: goal-radar
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   scan:
@@ -40,6 +39,7 @@ jobs:
         run: python goal_bot.py
 
       - name: Save state
+        if: always()
         run: |
           git config user.name "goal-radar-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
