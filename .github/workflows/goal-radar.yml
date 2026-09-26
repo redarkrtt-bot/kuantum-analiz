@@ -1,7 +1,6 @@
 name: Goal Radar
 
 on:
-  push:
   schedule:
     - cron: "3,33 * * * *"
       timezone: "Europe/Berlin"
@@ -16,7 +15,6 @@ concurrency:
 
 jobs:
   scan:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
