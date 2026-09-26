@@ -235,40 +235,23 @@ def send_discord(fixture, model, market, injuries, lineup_text, wx, minutes):
     payload = {
         "username": "Goal Radar",
         "embeds": [{
-            "title": "🧠 MAÇ ÖNÜ RADAR — 15 DK KALA",
+            "title": "🧠 MAÇ ÖNCESİ RADAR — 15 DK KALA",
             "description": (
-                f"**{home} – {away}**
-"
-                f"🏆 {league.get('name','Bilinmeyen Lig')} / {league.get('country','')}
-"
-                f"⏳ Başlamasına yaklaşık **{minutes} dk**
-
-"
-                f"🎯 Sinyal gücü: **{strength}** ({score:.1f})
-"
-                f"🏆 Model yönü: **{model['winner'] or 'Belirlenemedi'}**
-"
-                f"📊 1X2 model: Ev %{model['home_pct']:.1f} | X %{model['draw_pct']:.1f} | Dep %{model['away_pct']:.1f}
-"
-                f"⚽ Gol senaryosu: **{model['under_over'] or 'Belirlenemedi'}**
-"
-                f"🔢 Tahmini goller: {model['home_goals'] or '?'} - {model['away_goals'] or '?'}
-"
-                f"📌 Model tavsiyesi: **{model['advice'] or 'Yok'}**
-"
-                f"💹 {market['text']}
-"
-                f"🏥 Eksikler: {injuries}
-"
-                f"👥 Kadro: {lineup_text}
-"
-                f"🌦️ {weather_text}
-"
-                f"🧑‍⚖️ Hakem: {referee}
-"
-                f"🏟️ Stadyum: {venue} {('• ' + city) if city else ''}
-
-"
+                f"**{home} – {away}**\\n"
+                f"🏆 {league.get('name','Bilinmeyen Lig')} / {league.get('country','')}\\n"
+                f"⏳ Başlamasına yaklaşık **{minutes} dk**\\n\\n"
+                f"🎯 Sinyal gücü: **{strength}** ({score:.1f})\\n"
+                f"🏆 Model yönü: **{model['winner'] or 'Belirlenemedi'}**\\n"
+                f"📊 1X2 model: Ev %{model['home_pct']:.1f} | X %{model['draw_pct']:.1f} | Dep %{model['away_pct']:.1f}\\n"
+                f"⚽ Gol senaryosu: **{model['under_over'] or 'Belirlenemedi'}**\\n"
+                f"🔢 Tahmini goller: {model['home_goals'] or '?'} - {model['away_goals'] or '?'}\\n"
+                f"📌 Model tavsiyesi: **{model['advice'] or 'Yok'}**\\n"
+                f"💹 {market['text']}\\n"
+                f"🏥 Eksikler: {injuries}\\n"
+                f"👥 Kadro: {lineup_text}\\n"
+                f"🌦️ {weather_text}\\n"
+                f"🧑‍⚖️ Hakem: {referee}\\n"
+                f"🏟️ Stadyum: {venue} {('• ' + city) if city else ''}\\n\\n"
                 "Bu skor bir olasılık/sinyal ölçümüdür; garanti değildir."
             ),
             "footer": {"text": "Goal Radar • Berlin time • pre-match confirmation"},
