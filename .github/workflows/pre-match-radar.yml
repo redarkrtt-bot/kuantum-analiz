@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: pre-match-radar
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
