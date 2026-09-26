@@ -122,7 +122,53 @@ def _live_stats_fallback(fixture):
                 best = ev
                 break
         if not best:
-            return None
+            # Second public live-data fallback.
+            day = datetime.now(timezone.utc).strftime("%Y%m%d")
+            fm = requests.get(
+                "https://www.fotmob.com/api/matches",
+                params={"date": day},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            ).json()
+            fh, fa = norm(home), norm(away)
+            for league in fm.get("leagues", []) or []:
+                for match in league.get("matches", []) or []:
+                    mh = norm((match.get("home", {}) or {}).get("name"))
+                    ma = norm((match.get("away", {}) or {}).get("name"))
+                    if mh == fh and ma == fa:
+                        best = {"id": match.get("id"), "fotmob": True}
+                        break
+                if best:
+                    break
+            if not best or not best.get("id"):
+                return None
+            detail = requests.get(
+                "https://www.fotmob.com/api/matchDetails",
+                params={"matchId": best["id"]},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            ).json()
+            all_stats = (((detail.get("content") or {}).get("stats") or {}).get("Periods") or {}).get("All") or {}
+            hs, aws = {}, {}
+            fm_map = {
+                "ball possession":"Ball Possession", "total shots":"Total Shots",
+                "shots on target":"Shots on Goal", "corner kicks":"Corner Kicks",
+                "dangerous attacks":"Dangerous Attacks", "shots inside box":"Shots insidebox",
+                "shots outside box":"Shots outsidebox", "blocked shots":"Blocked Shots",
+            }
+            for group in all_stats.get("stats", []) or []:
+                for item in group.get("stats", []) or []:
+                    target = fm_map.get(str(item.get("title") or "").lower())
+                    vals = item.get("stats")
+                    if target and isinstance(vals, list) and len(vals) >= 2:
+                        hs[target], aws[target] = vals[0], vals[1]
+            hid = str((fixture.get("teams", {}).get("home", {}) or {}).get("id"))
+            aid = str((fixture.get("teams", {}).get("away", {}) or {}).get("id"))
+            return [
+                {"team":{"id":hid},"statistics":[{"type":k,"value":v} for k,v in hs.items()]},
+                {"team":{"id":aid},"statistics":[{"type":k,"value":v} for k,v in aws.items()]},
+            ] if hs or aws else None
+
         raw = requests.get(f"https://api.sofascore.com/api/v1/event/{best['id']}/statistics",
                            headers={"User-Agent": "Mozilla/5.0"}, timeout=12).json()
         periods = raw.get("statistics", []) or []
