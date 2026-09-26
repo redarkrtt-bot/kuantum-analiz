@@ -527,11 +527,10 @@ def main():
         preview.append(f"{ht}-{at} ({parse_minute(f)}')")
     print("ADAYLAR:", " | ".join(preview))
 
-    # Free plan: one live fixture call + one direct statistics call per scan.
-    # /fixtures/statistics is the correct endpoint for live team statistics.
-    max_details_this_run = 1
-    if API_REMAINING is not None:
-        max_details_this_run = min(max_details_this_run, max(0, API_REMAINING))
+    # Scan several candidates using the secondary live-stat source.
+    # Keep at most one API-Football statistics fallback call per run.
+    max_details_this_run = 5
+    api_fallback_calls = 0
 
     if max_details_this_run <= 0:
         print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}.")
@@ -558,7 +557,10 @@ def main():
 
         fid = str(fixture["fixture"]["id"])
         try:
-            stats_response = api_get("/fixtures/statistics", {"fixture": fid})
+            stats_response = _live_stats_fallback(fixture)
+            if stats_response is None and api_fallback_calls < 1 and (API_REMAINING is None or API_REMAINING > 0):
+                stats_response = api_get("/fixtures/statistics", {"fixture": fid})
+                api_fallback_calls += 1
             checked_details += 1
             now_iso = datetime.now(timezone.utc).isoformat()
             state.setdefault("checked", {})[fid] = now_iso
@@ -566,7 +568,7 @@ def main():
             if not stats_response:
                 missing_stats.append(fid)
                 state.setdefault("stats_failed", {})[fid] = now_iso
-                print(f"İSTATİSTİK YOK: {fid} — 120 dk rotasyon dışı.")
+                print(f"İSTATİSTİK YOK: {fid} — iki kaynakta da canlı veri yok.")
                 continue
 
             state.setdefault("stats_failed", {}).pop(fid, None)
