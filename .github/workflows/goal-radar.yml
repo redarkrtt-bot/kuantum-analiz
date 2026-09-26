@@ -1,6 +1,9 @@
 name: Goal Radar
 
 on:
+  push:
+    paths-ignore:
+      - "state.json"
   schedule:
     - cron: "3,23,43 * * * *"
   workflow_dispatch:
