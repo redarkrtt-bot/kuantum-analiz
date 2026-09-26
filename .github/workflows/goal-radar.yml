@@ -48,5 +48,9 @@ jobs:
             echo "No state changes."
           else
             git commit -m "Update goal radar state"
-            git push
+            for attempt in 1 2 3; do
+              git pull --rebase origin main && git push && break
+              echo "State push denemesi $attempt başarısız; tekrar deneniyor..."
+              sleep 2
+            done
           fi
