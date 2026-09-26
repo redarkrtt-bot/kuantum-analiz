@@ -503,53 +503,6 @@ def main():
             checked_details += 1
             print(f"İSTATİSTİK HATASI: {fid} | {e}")
 
-    print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}; pre-match rezervi korunuyor.")
-        state["last_scan"] = {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "live_matches": len(live),
-            "candidates": len(candidates),
-            "deep_scanned": 0,
-            "stats_available": 0,
-            "missing_stats": 0,
-            "signal": False,
-            "quota_remaining": API_REMAINING,
-        }
-        save_state(state)
-        return
-
-    analyzed = []
-    missing_stats = []
-    checked_details = 0
-
-    for fixture in candidates[:8]:
-        if checked_details >= max_details_this_run:
-            break
-
-        fid = str(fixture["fixture"]["id"])
-        try:
-            detail_rows = api_get("/fixtures", {"id": fid})
-            detailed = detail_rows[0] if detail_rows else fixture
-            stats_response = detailed.get("statistics") or []
-            checked_details += 1
-            state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
-
-            if not stats_response:
-                missing_stats.append(fid)
-                print(f"İSTATİSTİK YOK: {fid} — sonraki adaya geçiliyor.")
-                continue
-
-            provisional = analyze(detailed, stats_response)
-            analyzed.append((detailed, stats_response, provisional))
-            print(
-                f"ADAY ANALİZİ: {provisional['home']} - {provisional['away']} | "
-                f"{provisional['minute']}' | kalite={provisional['data_quality']:.2f} | "
-                f"ev={provisional['home_score']:.2f} | dep={provisional['away_score']:.2f} | "
-                f"sinyal={provisional['signal']}"
-            )
-        except Exception as e:
-            checked_details += 1
-            print(f"DETAY HATASI: {fid} | {e}")
-
     print(
         f"DERİN TARAMA: kontrol={checked_details} | "
         f"istatistikli={len(analyzed)} | istatistiksiz={len(missing_stats)} | "
