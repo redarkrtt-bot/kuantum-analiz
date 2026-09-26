@@ -330,7 +330,7 @@ def fetch_optional_enrichment(state, fixture, provisional):
             }
         except Exception as e:
             print(f"Stadyum verisi alınamadı: {e}")
-    elif venue_id in enrichment["venue"]:
+    elif str(venue_id) in enrichment["venue"]:
         venue = enrichment["venue"][str(venue_id)].get("data") or {}
 
     return weather, injuries, venue
