@@ -388,14 +388,23 @@ def main():
         and (f.get("fixture", {}).get("status", {}) or {}).get("short") in {"1H", "2H"}
     ]
 
+    print(f"CANLI TARAMA: toplam={len(live)} | uygun={len(candidates)}")
     if not candidates:
-        print("Canlı uygun maç yok.")
+        print("SONUÇ: Uygun canlı maç yok; alarm üretilmedi.")
         save_state(state)
         return
 
     candidates.sort(key=lambda f: candidate_score(f, state), reverse=True)
+    preview = []
+    for f in candidates[:10]:
+        ht = f.get("teams", {}).get("home", {}).get("name", "?")
+        at = f.get("teams", {}).get("away", {}).get("name", "?")
+        preview.append(f"{ht}-{at} ({parse_minute(f)}')")
+    print("ADAYLAR:", " | ".join(preview))
+
     fixture = candidates[0]
     fid = str(fixture["fixture"]["id"])
+    print(f"SEÇİLEN: {fixture['teams']['home']['name']} - {fixture['teams']['away']['name']} | {parse_minute(fixture)}' | skor={total_goals(fixture)}")
 
     # One fixture call returns the detailed fixture payload, including events,
     # lineups, statistics and player data when coverage exists.
@@ -406,7 +415,7 @@ def main():
     state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
 
     if not stats_response:
-        print(f"İstatistik yok, atlandı: {fid}")
+        print(f"SONUÇ: İstatistik yok, maç atlandı: {fid}")
         save_state(state)
         return
 
@@ -417,6 +426,7 @@ def main():
     result = analyze(detailed, stats_response, weather, injuries, venue)
 
     print(json.dumps(result, ensure_ascii=False))
+    print(f"ANALİZ: {result['home']} - {result['away']} | skor={result['score']} | dakika={result['minute']} | kalite={result['data_quality']:.2f} | ev={result['home_score']:.2f} | dep={result['away_score']:.2f} | sinyal={result['signal']}")
 
     if result["signal"]:
         last_alert = state.setdefault("alerts", {}).get(fid)
@@ -434,7 +444,7 @@ def main():
         else:
             print("Aynı maç için son alarm 30 dakikadan daha yeni.")
     else:
-        print("Güçlü sinyal oluşmadı.")
+        print(f"SONUÇ: Alarm yok — {result['strength']} / {result['direction']}")
 
     cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 7
     for bucket in ("checked", "alerts"):
