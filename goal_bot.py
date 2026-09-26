@@ -105,6 +105,54 @@ def candidate_score(fixture, state):
     return phase_bonus + score_bonus + late_bonus + unseen_bonus + cache_bonus + freshness - (minute / 1000)
 
 
+def _live_stats_fallback(fixture):
+    # Secondary public football feed used only when the primary stats endpoint is empty.
+    home = str((fixture.get("teams", {}).get("home", {}) or {}).get("name", "")).lower()
+    away = str((fixture.get("teams", {}).get("away", {}) or {}).get("name", "")).lower()
+    try:
+        live = requests.get("https://api.sofascore.com/api/v1/sport/football/events/live",
+                            headers={"User-Agent": "Mozilla/5.0"}, timeout=12).json().get("events", [])
+        def norm(x):
+            return "".join(ch for ch in str(x).lower() if ch.isalnum())
+        best = None
+        for ev in live:
+            eh = norm((ev.get("homeTeam", {}) or {}).get("name"))
+            ea = norm((ev.get("awayTeam", {}) or {}).get("name"))
+            if norm(home) == eh and norm(away) == ea:
+                best = ev
+                break
+        if not best:
+            return None
+        raw = requests.get(f"https://api.sofascore.com/api/v1/event/{best['id']}/statistics",
+                           headers={"User-Agent": "Mozilla/5.0"}, timeout=12).json()
+        periods = raw.get("statistics", []) or []
+        period = next((p for p in periods if str(p.get("period", "")).upper() == "ALL"),
+                      periods[0] if periods else None)
+        if not period:
+            return None
+        mapping = {
+            "ball possession":"Ball Possession", "total shots":"Total Shots",
+            "shots on target":"Shots on Goal", "corner kicks":"Corner Kicks",
+            "dangerous attacks":"Dangerous Attacks", "shots inside box":"Shots insidebox",
+            "shots outside box":"Shots outsidebox", "blocked shots":"Blocked Shots"
+        }
+        hs, aws = {}, {}
+        for group in period.get("groups", []):
+            for item in group.get("statisticsItems", []):
+                target = mapping.get(str(item.get("name", "")).lower())
+                if target:
+                    hs[target], aws[target] = item.get("home"), item.get("away")
+        hid = str((fixture.get("teams", {}).get("home", {}) or {}).get("id"))
+        aid = str((fixture.get("teams", {}).get("away", {}) or {}).get("id"))
+        return [
+            {"team":{"id":hid},"statistics":[{"type":k,"value":v} for k,v in hs.items()]},
+            {"team":{"id":aid},"statistics":[{"type":k,"value":v} for k,v in aws.items()]},
+        ] if hs or aws else None
+    except Exception as e:
+        print(f"İKİNCİ KAYNAK HATASI: {e}")
+        return None
+
+
 def extract_stats(stats_response):
     out = {}
     for team_block in stats_response:
