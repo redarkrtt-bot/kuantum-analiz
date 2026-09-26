@@ -693,25 +693,55 @@ def main():
         reverse=True,
     )
 
-    detailed, stats_response, provisional = pool[0]
-    print(
-        f"SEÇİLEN: {provisional['home']} - {provisional['away']} | "
-        f"{provisional['minute']}' | skor={provisional['score']} | "
-        f"ön_sinyal={provisional['signal']}"
-    )
+    # Do not stop at the first signal. If several matches are genuinely strong,
+    # send up to 3 independent alarms in the same scan. Each fixture still has
+    # its own 30-minute cooldown, so the radar can cover more matches without spam.
+    selected = (strong[:3] if strong else pool[:1])
+    sent_alerts = []
+    selected_ids = []
 
-    provisional_score = max(provisional["home_score"], provisional["away_score"])
-    weather, injuries, venue = fetch_optional_enrichment(state, detailed, provisional_score)
-    result = analyze(detailed, stats_response, weather, injuries, venue)
+    for detailed, stats_response, provisional in selected:
+        fid = str(detailed["fixture"]["id"])
+        selected_ids.append(fid)
 
-    print(json.dumps(result, ensure_ascii=False))
-    print(
-        f"ANALİZ: {result['home']} - {result['away']} | "
-        f"skor={result['score']} | dakika={result['minute']} | "
-        f"kalite={result['data_quality']:.2f} | "
-        f"ev={result['home_score']:.2f} | dep={result['away_score']:.2f} | "
-        f"sinyal={result['signal']}"
-    )
+        print(
+            f"SEÇİLEN: {provisional['home']} - {provisional['away']} | "
+            f"{provisional['minute']}' | skor={provisional['score']} | "
+            f"ön_sinyal={provisional['signal']}"
+        )
+
+        provisional_score = max(provisional["home_score"], provisional["away_score"])
+        weather, injuries, venue = fetch_optional_enrichment(state, detailed, provisional_score)
+        result = analyze(detailed, stats_response, weather, injuries, venue)
+
+        print(json.dumps(result, ensure_ascii=False))
+        print(
+            f"ANALİZ: {result['home']} - {result['away']} | "
+            f"skor={result['score']} | dakika={result['minute']} | "
+            f"kalite={result['data_quality']:.2f} | "
+            f"ev={result['home_score']:.2f} | dep={result['away_score']:.2f} | "
+            f"sinyal={result['signal']}"
+        )
+
+        if result["signal"]:
+            last_alert = state.setdefault("alerts", {}).get(fid)
+            send_again = True
+            if last_alert:
+                try:
+                    last_dt = datetime.fromisoformat(last_alert)
+                    send_again = (datetime.now(timezone.utc) - last_dt).total_seconds() >= 1800
+                except Exception:
+                    pass
+
+            if send_again:
+                send_discord(result)
+                state["alerts"][fid] = datetime.now(timezone.utc).isoformat()
+                sent_alerts.append(fid)
+                print(f"Discord alarmı gönderildi: {fid}")
+            else:
+                print(f"Aynı maç için son alarm 30 dakikadan daha yeni: {fid}")
+        else:
+            print(f"SONUÇ: Alarm yok — {result['strength']} / {result['direction']} | analiz={len(analyzed)}/{checked_details}")
 
     state["last_scan"] = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -722,29 +752,11 @@ def main():
         "scan_count": scan_count,
         "missing_stats": len(missing_stats),
         "strong_candidates": len(strong),
-        "selected_fixture": str(detailed["fixture"]["id"]),
-        "signal": bool(result["signal"]),
+        "selected_fixtures": selected_ids,
+        "alerts_sent": len(sent_alerts),
+        "signal": bool(strong),
         "quota_remaining": API_REMAINING,
     }
-
-    if result["signal"]:
-        fid = str(detailed["fixture"]["id"])
-        last_alert = state.setdefault("alerts", {}).get(fid)
-        send_again = True
-        if last_alert:
-            try:
-                last_dt = datetime.fromisoformat(last_alert)
-                send_again = (datetime.now(timezone.utc) - last_dt).total_seconds() >= 1800
-            except Exception:
-                pass
-        if send_again:
-            send_discord(result)
-            state["alerts"][fid] = datetime.now(timezone.utc).isoformat()
-            print("Discord alarmı gönderildi.")
-        else:
-            print("Aynı maç için son alarm 30 dakikadan daha yeni.")
-    else:
-        print(f"SONUÇ: Alarm yok — {result['strength']} / {result['direction']} | analiz={len(analyzed)}/{checked_details}")
 
     cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 7
     for bucket in ("checked", "alerts", "stats_failed"):
