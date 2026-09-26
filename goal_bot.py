@@ -9,6 +9,9 @@ STATE_FILE = "state.json"
 MINUTE_MIN = 8
 MINUTE_MAX = 88
 MAX_TOTAL_GOALS = 3
+WEATHER_CACHE_HOURS = 2
+INJURY_CACHE_HOURS = 4
+VENUE_CACHE_HOURS = 24
 
 api_key = os.environ["API_FOOTBALL_KEY"]
 discord_webhook = os.environ["DISCORD_WEBHOOK"]
@@ -22,7 +25,7 @@ def load_state():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"checked": {}, "alerts": {}}
+        return {"checked": {}, "alerts": {}, "enrichment": {}}
 
 
 def save_state(state):
@@ -57,7 +60,6 @@ def candidate_score(fixture, state):
     minute = parse_minute(fixture)
     last = state.get("checked", {}).get(fid)
     age_bonus = 999 if last is None else 0
-    # Prefer matches not checked recently and those in the core 20-75 minute zone.
     core = 20 if 20 <= minute <= 75 else 0
     return age_bonus + core - (minute / 1000)
 
@@ -91,7 +93,31 @@ def num(value):
         return 0.0
 
 
-def analyze(fixture, stats_response):
+def get_stat(stats, name):
+    return num(stats.get(name))
+
+
+def pressure_components(s):
+    return {
+        "attacks": get_stat(s, "Dangerous Attacks"),
+        "shots": get_stat(s, "Total Shots"),
+        "sot": get_stat(s, "Shots on Goal"),
+        "corners": get_stat(s, "Corner Kicks"),
+        "possession": get_stat(s, "Ball Possession"),
+        "passes": get_stat(s, "Total passes"),
+        "pass_accuracy": get_stat(s, "Passes %"),
+        "blocked": get_stat(s, "Blocked Shots"),
+        "inside": get_stat(s, "Shots insidebox"),
+        "outside": get_stat(s, "Shots outsidebox"),
+        "offsides": get_stat(s, "Offsides"),
+        "saves": get_stat(s, "Goalkeeper Saves"),
+        "fouls": get_stat(s, "Fouls"),
+        "yellow": get_stat(s, "Yellow Cards"),
+        "red": get_stat(s, "Red Cards"),
+    }
+
+
+def analyze(fixture, stats_response, weather=None, injuries=None, venue=None):
     home = fixture["teams"]["home"]
     away = fixture["teams"]["away"]
     score = fixture.get("goals", {}) or {}
@@ -101,84 +127,249 @@ def analyze(fixture, stats_response):
 
     stats = extract_stats(stats_response)
     hs = stats.get(str(home["id"]), {})
-    as_ = stats.get(str(away["id"]), {})
+    aws = stats.get(str(away["id"]), {})
+    hc = pressure_components(hs)
+    ac = pressure_components(aws)
 
-    h_att = num(hs.get("Dangerous Attacks"))
-    a_att = num(as_.get("Dangerous Attacks"))
-    h_shots = num(hs.get("Total Shots"))
-    a_shots = num(as_.get("Total Shots"))
-    h_sot = num(hs.get("Shots on Goal"))
-    a_sot = num(as_.get("Shots on Goal"))
-    h_pos = num(hs.get("Ball Possession"))
-    a_pos = num(as_.get("Ball Possession"))
-    h_corners = num(hs.get("Corner Kicks"))
-    a_corners = num(as_.get("Corner Kicks"))
-
-    pressure_home = h_att * 0.30 + h_shots * 1.5 + h_sot * 3 + h_corners * 1.0 + h_pos * 0.05
-    pressure_away = a_att * 0.30 + a_shots * 1.5 + a_sot * 3 + a_corners * 1.0 + a_pos * 0.05
-
-    # A conservative signal: multiple attacking indicators must agree.
+    # Match-total pressure. Missing statistics are NOT treated as positive evidence.
     home_score = (
-        (h_sot >= 3) * 2
-        + (h_shots >= 7) * 1
-        + (h_att >= 20) * 1
-        + (h_corners >= 3) * 1
-        + (h_pos >= 52) * 0.5
+        (hc["sot"] >= 3) * 2.0
+        + (hc["shots"] >= 7) * 1.0
+        + (hc["attacks"] >= 20) * 1.0
+        + (hc["corners"] >= 3) * 1.0
+        + (hc["possession"] >= 52) * 0.5
+        + (hc["inside"] >= 4) * 1.0
+        + (hc["blocked"] >= 2) * 0.5
     )
     away_score = (
-        (a_sot >= 3) * 2
-        + (a_shots >= 7) * 1
-        + (a_att >= 20) * 1
-        + (a_corners >= 3) * 1
-        + (a_pos >= 52) * 0.5
+        (ac["sot"] >= 3) * 2.0
+        + (ac["shots"] >= 7) * 1.0
+        + (ac["attacks"] >= 20) * 1.0
+        + (ac["corners"] >= 3) * 1.0
+        + (ac["possession"] >= 52) * 0.5
+        + (ac["inside"] >= 4) * 1.0
+        + (ac["blocked"] >= 2) * 0.5
     )
 
-    if home_score >= 4 and home_score >= away_score + 1:
-        direction = f"{home['name']} gol baskısı"
-        strength = "GÜÇLÜ"
-        signal = True
-    elif away_score >= 4 and away_score >= home_score + 1:
-        direction = f"{away['name']} gol baskısı"
-        strength = "GÜÇLÜ"
-        signal = True
-    elif max(home_score, away_score) >= 3.5 and abs(home_score - away_score) >= 0.5:
-        direction = f"{home['name']} / {away['name']} baskı avantajı"
-        strength = "ORTA"
-        signal = False
+    # Score-state and match-phase context.
+    score_state = f"{home_goals}-{away_goals}"
+    state_bonus = 0.0
+    if home_goals == away_goals:
+        state_bonus = 0.7 if minute >= 65 else 0.2
+    elif abs(home_goals - away_goals) == 1:
+        state_bonus = 0.4
+    if minute <= 30:
+        phase = "İLK_YARI_ERKEN"
+    elif minute <= 45:
+        phase = "İLK_YARI_SON"
+    elif minute <= 70:
+        phase = "İKİNCİ_YARI_ORTA"
     else:
+        phase = "İKİNCİ_YARI_SON"
+
+    # Weather is a modifier, never a standalone prediction.
+    weather_penalty = 0.0
+    weather_note = "Hava verisi yok"
+    if weather:
+        rain = num(weather.get("rain"))
+        wind = num(weather.get("wind"))
+        snowfall = num(weather.get("snowfall"))
+        temp = num(weather.get("temperature"))
+        if rain >= 4 or snowfall >= 1 or wind >= 45:
+            weather_penalty = 0.6
+            weather_note = f"Zorlu hava: yağış={rain:.1f}mm, rüzgar={wind:.0f}km/s"
+        elif rain > 0.5 or wind >= 30:
+            weather_penalty = 0.25
+            weather_note = f"Hava etkisi: yağış={rain:.1f}mm, rüzgar={wind:.0f}km/s"
+        else:
+            weather_note = f"Normal: {temp:.1f}°C, yağış={rain:.1f}mm, rüzgar={wind:.0f}km/s"
+
+    # Data quality prevents false confidence.
+    fields = [
+        hc["shots"], hc["sot"], hc["corners"], hc["attacks"],
+        ac["shots"], ac["sot"], ac["corners"], ac["attacks"]
+    ]
+    available = sum(v > 0 for v in fields)
+    data_quality = round(min(1.0, available / 8.0), 2)
+
+    raw_home = home_score + state_bonus - weather_penalty
+    raw_away = away_score + state_bonus - weather_penalty
+
+    if data_quality < 0.50:
+        strength, signal = "VERİ YETERSİZ", False
+        direction = "Yeterli canlı veri yok"
+    elif raw_home >= 4.0 and raw_home >= raw_away + 1.0:
+        strength, signal = "GÜÇLÜ", True
+        direction = f"{home['name']} gol baskısı"
+    elif raw_away >= 4.0 and raw_away >= raw_home + 1.0:
+        strength, signal = "GÜÇLÜ", True
+        direction = f"{away['name']} gol baskısı"
+    elif max(raw_home, raw_away) >= 3.5 and abs(raw_home - raw_away) >= 0.5:
+        strength, signal = "ORTA", False
+        direction = f"{home['name']} / {away['name']} baskı avantajı"
+    else:
+        strength, signal = "ZAYIF", False
         direction = "Belirgin gol baskısı yok"
-        strength = "ZAYIF"
-        signal = False
+
+    referee = (fixture.get("fixture", {}) or {}).get("referee") or "Bilinmiyor"
+    venue_data = fixture.get("fixture", {}).get("venue", {}) or {}
 
     return {
         "signal": signal,
         "strength": strength,
         "direction": direction,
         "minute": minute,
-        "score": f"{home_goals}-{away_goals}",
+        "score": score_state,
         "home": home["name"],
         "away": away["name"],
-        "home_score": home_score,
-        "away_score": away_score,
-        "pressure_home": pressure_home,
-        "pressure_away": pressure_away,
+        "home_score": round(raw_home, 2),
+        "away_score": round(raw_away, 2),
+        "pressure_home": round(hc["attacks"] * 0.30 + hc["shots"] * 1.5 + hc["sot"] * 3 + hc["corners"], 2),
+        "pressure_away": round(ac["attacks"] * 0.30 + ac["shots"] * 1.5 + ac["sot"] * 3 + ac["corners"], 2),
+        "data_quality": data_quality,
+        "phase": phase,
+        "referee": referee,
+        "venue": venue_data.get("name") or "Bilinmiyor",
+        "venue_city": venue_data.get("city") or "",
+        "weather": weather_note,
+        "injuries": injuries or [],
+        "venue_detail": venue or {},
         "stats_present": bool(stats),
     }
+
+
+def cache_fresh(state, bucket, key, hours):
+    value = state.get("enrichment", {}).get(bucket, {}).get(str(key))
+    if not value or "updated_at" not in value:
+        return False
+    try:
+        dt = datetime.fromisoformat(value["updated_at"])
+        return (datetime.now(timezone.utc) - dt).total_seconds() < hours * 3600
+    except Exception:
+        return False
+
+
+def fetch_weather(city):
+    if not city:
+        return None
+    try:
+        g = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city, "count": 1, "language": "en", "format": "json"},
+            timeout=12,
+        ).json()
+        result = (g.get("results") or [None])[0]
+        if not result:
+            return None
+        lat, lon = result["latitude"], result["longitude"]
+        w = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,precipitation,rain,snowfall,wind_speed_10m",
+                "timezone": "auto",
+            },
+            timeout=12,
+        ).json()
+        current = w.get("current") or {}
+        return {
+            "temperature": current.get("temperature_2m"),
+            "rain": current.get("rain"),
+            "snowfall": current.get("snowfall"),
+            "wind": current.get("wind_speed_10m"),
+        }
+    except Exception as e:
+        print(f"Hava verisi alınamadı: {e}")
+        return None
+
+
+def fetch_optional_enrichment(state, fixture, provisional):
+    fid = str(fixture["fixture"]["id"])
+    enrichment = state.setdefault("enrichment", {})
+    enrichment.setdefault("weather", {})
+    enrichment.setdefault("injuries", {})
+    enrichment.setdefault("venue", {})
+
+    city = (fixture.get("fixture", {}).get("venue", {}) or {}).get("city") or ""
+    weather = None
+    if city:
+        key = city.lower()
+        if cache_fresh(state, "weather", key, WEATHER_CACHE_HOURS):
+            weather = enrichment["weather"][key].get("data")
+        else:
+            weather = fetch_weather(city)
+            enrichment["weather"][key] = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "data": weather,
+            }
+
+    injuries = []
+    # Injury calls are expensive on the free quota, so only enrich serious candidates.
+    if provisional >= 4.0 and not cache_fresh(state, "injuries", fid, INJURY_CACHE_HOURS):
+        try:
+            injuries = api_get("/injuries", {"fixture": fid})
+            enrichment["injuries"][fid] = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "data": injuries,
+            }
+        except Exception as e:
+            print(f"Sakatlık verisi alınamadı: {e}")
+    elif fid in enrichment["injuries"]:
+        injuries = enrichment["injuries"][fid].get("data") or []
+
+    venue_id = (fixture.get("fixture", {}).get("venue", {}) or {}).get("id")
+    venue = {}
+    if venue_id and provisional >= 4.0 and not cache_fresh(state, "venue", venue_id, VENUE_CACHE_HOURS):
+        try:
+            rows = api_get("/venues", {"id": venue_id})
+            venue = rows[0] if rows else {}
+            enrichment["venue"][str(venue_id)] = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "data": venue,
+            }
+        except Exception as e:
+            print(f"Stadyum verisi alınamadı: {e}")
+    elif venue_id in enrichment["venue"]:
+        venue = enrichment["venue"][str(venue_id)].get("data") or {}
+
+    return weather, injuries, venue
 
 
 def send_discord(result):
     if not result["signal"]:
         return
 
+    injury_names = []
+    for item in result["injuries"][:8]:
+        player = (item.get("player") or {}).get("name") or "Bilinmeyen"
+        reason = item.get("reason") or item.get("type") or ""
+        injury_names.append(f"{player} ({reason})")
+    injury_text = ", ".join(injury_names) if injury_names else "Kritik eksik bilgisi yok/veri yok"
+
+    venue = result["venue_detail"]
+    venue_text = result["venue"]
+    if venue.get("capacity"):
+        venue_text += f" • {venue.get('capacity')} kapasite"
+    if venue.get("surface"):
+        venue_text += f" • {venue.get('surface')}"
+
     payload = {
         "username": "Goal Radar",
         "embeds": [{
-            "title": "🚨 GOL SİNYALİ",
-            "description": f"**{result['home']} – {result['away']}**\n"
-                           f"⏱️ {result['minute']}' | ⚽ {result['score']}\n"
-                           f"🎯 {result['direction']}\n"
-                           f"🔥 Sinyal: **{result['strength']}**",
-            "footer": {"text": "API-Football canlı istatistikleri • Otomatik tarama"},
+            "title": "🚨 GOL SİNYALİ — GELİŞMİŞ MOTOR",
+            "description": (
+                f"**{result['home']} – {result['away']}**\n"
+                f"⏱️ {result['minute']}' | ⚽ {result['score']} | {result['phase']}\n"
+                f"🎯 **{result['direction']}**\n"
+                f"🔥 Sinyal: **{result['strength']}**\n"
+                f"📊 Veri güvenilirliği: **{result['data_quality']*100:.0f}%**\n"
+                f"🌦️ {result['weather']}\n"
+                f"👨‍⚖️ Hakem: {result['referee']}\n"
+                f"🏟️ {venue_text}\n"
+                f"🚑 Eksikler: {injury_text}"
+            ),
+            "footer": {"text": "Goal Radar • canlı istatistik + bağlam + hava + kadro kontrolü"},
         }]
     }
     r = requests.post(discord_webhook, json=payload, timeout=15)
@@ -205,7 +396,12 @@ def main():
     fixture = candidates[0]
     fid = str(fixture["fixture"]["id"])
 
-    stats_response = api_get("/fixtures/statistics", {"fixture": fid})
+    # One fixture call returns the detailed fixture payload, including events,
+    # lineups, statistics and player data when coverage exists.
+    detail_rows = api_get("/fixtures", {"id": fid})
+    detailed = detail_rows[0] if detail_rows else fixture
+    stats_response = detailed.get("statistics") or []
+
     state.setdefault("checked", {})[fid] = datetime.now(timezone.utc).isoformat()
 
     if not stats_response:
@@ -213,12 +409,16 @@ def main():
         save_state(state)
         return
 
-    result = analyze(fixture, stats_response)
+    provisional = analyze(detailed, stats_response)
+    provisional_score = max(provisional["home_score"], provisional["away_score"])
+
+    weather, injuries, venue = fetch_optional_enrichment(state, detailed, provisional_score)
+    result = analyze(detailed, stats_response, weather, injuries, venue)
+
     print(json.dumps(result, ensure_ascii=False))
 
     if result["signal"]:
         last_alert = state.setdefault("alerts", {}).get(fid)
-        # Aynı maç için 30 dakika içinde ikinci kez alarm gönderme.
         send_again = True
         if last_alert:
             try:
@@ -235,8 +435,7 @@ def main():
     else:
         print("Güçlü sinyal oluşmadı.")
 
-    # Eski state kayıtlarını küçült.
-    cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 3
+    cutoff = datetime.now(timezone.utc).timestamp() - 86400 * 7
     for bucket in ("checked", "alerts"):
         for key in list(state.get(bucket, {})):
             try:
