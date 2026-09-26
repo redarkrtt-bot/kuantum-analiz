@@ -1,9 +1,6 @@
 name: Pre-Match Radar
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
-      timezone: "Europe/Berlin"
   workflow_dispatch:
 
 permissions:
