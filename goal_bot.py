@@ -19,7 +19,11 @@ discord_webhook = os.environ["DISCORD_WEBHOOK"]
 session = requests.Session()
 session.headers.update({"x-apisports-key": api_key})
 API_REMAINING = None
-# Live radar: rotation + pressure-memory engine enabled.
+# Live radar: broad rotation + pressure-memory engine.
+# The free API tier has 100 requests/day, so deep API calls are deliberately
+# batched and only made on every 3rd scan. The broad scan can still use FotMob.
+BATCH_DETAIL_EVERY_SCANS = 3
+MAX_DEEP_SCAN = 12
 
 
 def load_state():
@@ -90,8 +94,11 @@ def candidate_score(fixture, state):
         except Exception:
             pass
 
-    if failed_age is not None and failed_age < 120:
-        return -5000.0
+    # A missing-data match must not disappear from the radar for two hours.
+    # It gets a penalty so healthy matches are preferred, but it can return
+    # quickly on later rotations when it becomes one of the stronger candidates.
+    if failed_age is not None and failed_age < 45:
+        return -250.0
     if checked_age is not None and checked_age < 35:
         return -3000.0
 
@@ -472,20 +479,8 @@ def fetch_optional_enrichment(state, fixture, provisional):
     if fid in enrichment["injuries"]:
         injuries = enrichment["injuries"][fid].get("data") or []
 
-    if (
-        provisional >= 4.0
-        and not cache_fresh(state, "injuries", fid, INJURY_CACHE_HOURS)
-        and quota.get("enrichment_calls", 0) < 2
-    ):
-        try:
-            injuries = api_get("/injuries", {"fixture": fid})
-            enrichment["injuries"][fid] = {
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "data": injuries,
-            }
-            quota["enrichment_calls"] += 1
-        except Exception as e:
-            print(f"Sakatlık verisi alınamadı: {e}")
+    # Do NOT spend the scarce API-Football quota on injuries during live radar.
+    # Live goal detection is the priority; cached injury data is still used when present.
 
     # Fixture data already contains the venue name/city; avoid a separate
     # /venues call on the free tier.
@@ -533,6 +528,40 @@ def send_discord(result):
     r.raise_for_status()
 
 
+def batch_fixture_details(fixtures):
+    """Fetch detailed fixture payloads for up to 20 candidates in one API call."""
+    if not fixtures:
+        return {}
+    ids = []
+    for fixture in fixtures[:20]:
+        fid = str((fixture.get("fixture") or {}).get("id") or "")
+        if fid:
+            ids.append(fid)
+    if not ids:
+        return {}
+    try:
+        response = api_get("/fixtures", {"ids": "-".join(ids)})
+    except Exception as e:
+        print(f"TOPLU DETAY HATASI: {e}")
+        return {}
+
+    by_id = {}
+    for item in response or []:
+        fid = str((item.get("fixture") or {}).get("id") or "")
+        if fid:
+            by_id[fid] = item
+    print(f"TOPLU DETAY: istenen={len(ids)} | dönen={len(by_id)}")
+    return by_id
+
+
+def fixture_stats_from_detail(detail):
+    """Read embedded /fixtures statistics from a detailed fixture response."""
+    stats = detail.get("statistics")
+    if isinstance(stats, list) and stats:
+        return stats
+    return None
+
+
 def main():
     state = load_state()
     state.setdefault("checked", {})
@@ -563,40 +592,36 @@ def main():
         preview.append(f"{ht}-{at} ({parse_minute(f)}')")
     print("ADAYLAR:", " | ".join(preview))
 
-    # Scan several candidates using the secondary live-stat source.
-    # Keep at most one API-Football statistics fallback call per run.
-    max_details_this_run = 5
-    api_fallback_calls = 0
+    # Broad live radar: rotate through up to 12 candidates each scan.
+    # On every 3rd scan, use ONE batched API-Football detail call (up to 20 IDs).
+    # On other scans, use the secondary source without spending API-Football quota.
+    scan_count = int(state.get("scan_count", 0) or 0) + 1
+    state["scan_count"] = scan_count
+    use_batched_api = (scan_count % BATCH_DETAIL_EVERY_SCANS == 1) and (API_REMAINING is None or API_REMAINING > 0)
 
-    if max_details_this_run <= 0:
-        print(f"DETAY ATLANDI: API kalan kota={API_REMAINING}.")
-        state["last_scan"] = {
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "live_matches": len(live),
-            "candidates": len(candidates),
-            "deep_scanned": 0,
-            "stats_available": 0,
-            "missing_stats": 0,
-            "signal": False,
-            "quota_remaining": API_REMAINING,
-        }
-        save_state(state)
-        return
+    scan_candidates = candidates[:MAX_DEEP_SCAN]
+    batch_details = batch_fixture_details(scan_candidates) if use_batched_api else {}
+    if use_batched_api:
+        print(f"DERİN KAYNAK: bu taramada toplu API detayı aktif | kalan_kota={API_REMAINING}")
+    else:
+        print("DERİN KAYNAK: ikincil canlı veri aktif | API-Football detay çağrısı yok")
 
     analyzed = []
     missing_stats = []
     checked_details = 0
 
-    for fixture in candidates:
-        if checked_details >= max_details_this_run:
-            break
-
+    for fixture in scan_candidates:
         fid = str(fixture["fixture"]["id"])
         try:
-            stats_response = _live_stats_fallback(fixture)
-            if stats_response is None and api_fallback_calls < 1 and (API_REMAINING is None or API_REMAINING > 0):
-                stats_response = api_get("/fixtures/statistics", {"fixture": fid})
-                api_fallback_calls += 1
+            # Prefer the batched API payload when this is a detail scan.
+            stats_response = fixture_stats_from_detail(batch_details.get(fid, {}))
+            source = "API-BATCH" if stats_response else None
+
+            # Otherwise (or if the batch has no stats), try the secondary source.
+            if not stats_response:
+                stats_response = _live_stats_fallback(fixture)
+                source = "FOTMOB" if stats_response else None
+
             checked_details += 1
             now_iso = datetime.now(timezone.utc).isoformat()
             state.setdefault("checked", {})[fid] = now_iso
@@ -604,7 +629,7 @@ def main():
             if not stats_response:
                 missing_stats.append(fid)
                 state.setdefault("stats_failed", {})[fid] = now_iso
-                print(f"İSTATİSTİK YOK: {fid} — iki kaynakta da canlı veri yok.")
+                print(f"İSTATİSTİK YOK: {fid} — aday bu turda veri vermedi.")
                 continue
 
             state.setdefault("stats_failed", {}).pop(fid, None)
@@ -627,13 +652,13 @@ def main():
             }
             print(
                 f"ADAY ANALİZİ: {provisional['home']} - {provisional['away']} | "
-                f"{provisional['minute']}' | kalite={provisional['data_quality']:.2f} | "
+                f"{provisional['minute']}' | kaynak={source} | kalite={provisional['data_quality']:.2f} | "
                 f"ev={provisional['home_score']:.2f} | dep={provisional['away_score']:.2f} | "
                 f"sinyal={provisional['signal']} | yön={provisional['direction']}"
             )
         except Exception as e:
             checked_details += 1
-            print(f"İSTATİSTİK HATASI: {fid} | {e}")
+            print(f"ADAY ANALİZ HATASI: {fid} | {e}")
 
     print(
         f"DERİN TARAMA: kontrol={checked_details} | "
@@ -649,6 +674,7 @@ def main():
             "candidates": len(candidates),
             "deep_scanned": checked_details,
             "stats_available": 0,
+            "scan_count": scan_count,
             "missing_stats": len(missing_stats),
             "signal": False,
             "quota_remaining": API_REMAINING,
@@ -693,6 +719,7 @@ def main():
         "candidates": len(candidates),
         "deep_scanned": checked_details,
         "stats_available": len(analyzed),
+        "scan_count": scan_count,
         "missing_stats": len(missing_stats),
         "strong_candidates": len(strong),
         "selected_fixture": str(detailed["fixture"]["id"]),
