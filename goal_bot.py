@@ -412,7 +412,7 @@ def main():
     # Free plans do not allow the multi-ID ids parameter. Inspect multiple
     # candidates sequentially, while reserving quota for the pre-match radar.
     reserve_for_prematch = 20
-    max_details_this_run = 2
+    max_details_this_run = 4
     if API_REMAINING is not None:
         max_details_this_run = min(
             max_details_this_run,
