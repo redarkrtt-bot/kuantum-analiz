@@ -118,21 +118,28 @@
     "1593902": "2026-09-27T10:17:31.690205+00:00",
     "1613654": "2026-09-27T10:43:35.568203+00:00",
     "1639090": "2026-09-27T11:17:24.633242+00:00",
-    "1570765": "2026-09-27T11:43:48.132983+00:00"
+    "1570765": "2026-09-27T11:43:48.132983+00:00",
+    "1495570": "2026-09-27T12:22:38.997300+00:00"
   },
   "alerts": {
-    "1641727": "2026-09-26T11:51:43.515685+00:00"
+    "1641727": "2026-09-26T11:51:43.515685+00:00",
+    "1495570": "2026-09-27T12:22:40.040478+00:00"
   },
   "last_scan": {
-    "updated_at": "2026-09-27T11:43:48.585387+00:00",
-    "live_matches": 93,
-    "candidates": 72,
+    "updated_at": "2026-09-27T12:22:40.040502+00:00",
+    "live_matches": 68,
+    "candidates": 54,
     "deep_scanned": 1,
-    "stats_available": 0,
-    "scan_count": 28,
-    "missing_stats": 1,
-    "signal": false,
-    "quota_remaining": 63
+    "stats_available": 1,
+    "scan_count": 29,
+    "missing_stats": 0,
+    "strong_candidates": 1,
+    "selected_fixtures": [
+      "1495570"
+    ],
+    "alerts_sent": 1,
+    "signal": true,
+    "quota_remaining": 61
   },
   "enrichment": {
     "weather": {
@@ -153,13 +160,22 @@
           "snowfall": 0.0,
           "wind": 4.6
         }
+      },
+      "malmo": {
+        "updated_at": "2026-09-27T12:22:39.802954+00:00",
+        "data": {
+          "temperature": 17.7,
+          "rain": 0.0,
+          "snowfall": 0.0,
+          "wind": 19.8
+        }
       }
     },
     "injuries": {},
     "venue": {}
   },
   "quota": {
-    "date": "2026-09-26",
+    "date": "2026-09-27",
     "enrichment_calls": 0
   },
   "stats_failed": {
@@ -275,8 +291,17 @@
       "score": "1-0",
       "home": "Japan U23",
       "away": "Korea DPR U23"
+    },
+    "1495570": {
+      "updated_at": "2026-09-27T12:22:38.997300+00:00",
+      "pressure": 32.9,
+      "signal": true,
+      "minute": 65,
+      "score": "0-0",
+      "home": "Rosengård W",
+      "away": "Piteå W"
     }
   },
-  "scan_count": 28,
+  "scan_count": 29,
   "radar_health_last": "2026-09-27T11:43:48.585373+00:00"
 }
