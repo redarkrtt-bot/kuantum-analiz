@@ -112,12 +112,11 @@ def candidate_score(fixture, state):
     return phase_bonus + score_bonus + late_bonus + unseen_bonus + cache_bonus + freshness - (minute / 1000)
 
 
-FOTMOB_MATCH_CACHE = None
-FOTMOB_CACHE_DATE = None
+FOTMOB_MATCH_CACHE = {}
 
 
 def _live_stats_fallback(fixture):
-    global FOTMOB_MATCH_CACHE, FOTMOB_CACHE_DATE
+    global FOTMOB_MATCH_CACHE
     from difflib import SequenceMatcher
     import unicodedata
 
@@ -146,7 +145,7 @@ def _live_stats_fallback(fixture):
 
         matches = []
         for day in days:
-            if FOTMOB_MATCH_CACHE is None or FOTMOB_CACHE_DATE != day:
+            if day not in FOTMOB_MATCH_CACHE:
                 response = requests.get(
                     "https://www.fotmob.com/api/matches",
                     params={"date": day},
@@ -155,12 +154,11 @@ def _live_stats_fallback(fixture):
                 )
                 response.raise_for_status()
                 data = response.json()
-                FOTMOB_MATCH_CACHE = [
+                FOTMOB_MATCH_CACHE[day] = [
                     m for league in data.get("leagues", []) or []
                     for m in league.get("matches", []) or []
                 ]
-                FOTMOB_CACHE_DATE = day
-            matches.extend(FOTMOB_MATCH_CACHE or [])
+            matches.extend(FOTMOB_MATCH_CACHE.get(day, []))
 
         fh, fa = norm(home), norm(away)
         best, best_score = None, 0.0
