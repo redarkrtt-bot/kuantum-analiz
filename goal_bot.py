@@ -118,67 +118,108 @@ FOTMOB_CACHE_DATE = None
 
 def _live_stats_fallback(fixture):
     global FOTMOB_MATCH_CACHE, FOTMOB_CACHE_DATE
+    from difflib import SequenceMatcher
+    import unicodedata
+
     home = str((fixture.get("teams", {}).get("home", {}) or {}).get("name", ""))
     away = str((fixture.get("teams", {}).get("away", {}) or {}).get("name", ""))
 
-    def norm(x):
-        import unicodedata
-        s = unicodedata.normalize("NFKD", str(x or "")).encode("ascii", "ignore").decode().lower()
+    def norm(value):
+        s = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
+        for token in (" women", " fc", " afc", " cf", " sc", " club"):
+            s = s.replace(token, " ")
         return "".join(ch for ch in s if ch.isalnum())
 
     try:
-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
-        if FOTMOB_MATCH_CACHE is None or FOTMOB_CACHE_DATE != day:
-            data = requests.get(
-                "https://www.fotmob.com/api/matches",
-                params={"date": day},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=15,
-            ).json()
-            FOTMOB_MATCH_CACHE = [
-                m
-                for league in data.get("leagues", []) or []
-                for m in league.get("matches", []) or []
-            ]
-            FOTMOB_CACHE_DATE = day
+        kickoff = (fixture.get("fixture") or {}).get("timestamp")
+        if kickoff:
+            match_day = datetime.fromtimestamp(int(kickoff), timezone.utc).strftime("%Y%m%d")
+        else:
+            match_day = datetime.now(timezone.utc).strftime("%Y%m%d")
+
+        # FotMob's date endpoint is date-sensitive; check adjacent UTC dates too,
+        # because fixtures near midnight can be listed on a neighboring day.
+        days = []
+        base = datetime.strptime(match_day, "%Y%m%d").replace(tzinfo=timezone.utc)
+        for offset in (-1, 0, 1):
+            days.append((base + __import__("datetime").timedelta(days=offset)).strftime("%Y%m%d"))
+
+        matches = []
+        for day in days:
+            if FOTMOB_MATCH_CACHE is None or FOTMOB_CACHE_DATE != day:
+                response = requests.get(
+                    "https://www.fotmob.com/api/matches",
+                    params={"date": day},
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                    timeout=15,
+                )
+                response.raise_for_status()
+                data = response.json()
+                FOTMOB_MATCH_CACHE = [
+                    m for league in data.get("leagues", []) or []
+                    for m in league.get("matches", []) or []
+                ]
+                FOTMOB_CACHE_DATE = day
+            matches.extend(FOTMOB_MATCH_CACHE or [])
 
         fh, fa = norm(home), norm(away)
-        match = None
-        for m in FOTMOB_MATCH_CACHE:
-            mh = norm((m.get("home", {}) or {}).get("name"))
-            ma = norm((m.get("away", {}) or {}).get("name"))
-            if mh == fh and ma == fa:
-                match = m
-                break
+        best, best_score = None, 0.0
+        seen = set()
+        for match in matches:
+            mid = str(match.get("id") or "")
+            if not mid or mid in seen:
+                continue
+            seen.add(mid)
+            mh = norm((match.get("home") or {}).get("name"))
+            ma = norm((match.get("away") or {}).get("name"))
+            if not mh or not ma:
+                continue
+            home_sim = 1.0 if fh == mh else SequenceMatcher(None, fh, mh).ratio()
+            away_sim = 1.0 if fa == ma else SequenceMatcher(None, fa, ma).ratio()
+            # Names sometimes include reserve/youth labels on only one source.
+            score = (home_sim + away_sim) / 2
+            if home_sim >= 0.68 and away_sim >= 0.68 and score > best_score:
+                best, best_score = match, score
 
-        if not match or not match.get("id"):
+        if not best:
+            print(f"FOTMOB EŞLEŞMESİ YOK: {home} - {away} | tarihler={','.join(days)}")
             return None
 
-        detail = requests.get(
+        detail_response = requests.get(
             "https://www.fotmob.com/api/matchDetails",
-            params={"matchId": match["id"]},
-            headers={"User-Agent": "Mozilla/5.0"},
+            params={"matchId": best["id"]},
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
             timeout=15,
-        ).json()
-
-        all_stats = (
-            (((detail.get("content") or {}).get("stats") or {}).get("Periods") or {}).get("All")
-            or {}
         )
+        detail_response.raise_for_status()
+        detail = detail_response.json()
+
+        stats_root = ((detail.get("content") or {}).get("stats") or {})
+        periods = stats_root.get("Periods") or {}
+        all_stats = periods.get("All") or periods.get("AllMatch") or {}
+        if not all_stats:
+            all_stats = next((v for v in periods.values() if isinstance(v, dict) and v.get("stats")), {})
         home_stats, away_stats = {}, {}
         mapping = {
             "ball possession": "Ball Possession",
             "total shots": "Total Shots",
             "shots on target": "Shots on Goal",
+            "shots on goal": "Shots on Goal",
             "corner kicks": "Corner Kicks",
             "dangerous attacks": "Dangerous Attacks",
             "shots inside box": "Shots insidebox",
+            "shots inside the box": "Shots insidebox",
             "shots outside box": "Shots outsidebox",
+            "shots outside the box": "Shots outsidebox",
             "blocked shots": "Blocked Shots",
+            "fouls": "Fouls",
+            "yellow cards": "Yellow Cards",
+            "red cards": "Red Cards",
+            "offsides": "Offsides",
         }
         for group in all_stats.get("stats", []) or []:
             for item in group.get("stats", []) or []:
-                target = mapping.get(str(item.get("title") or "").lower())
+                target = mapping.get(str(item.get("title") or "").strip().lower())
                 values = item.get("stats")
                 if target and isinstance(values, list) and len(values) >= 2:
                     home_stats[target], away_stats[target] = values[0], values[1]
@@ -186,15 +227,17 @@ def _live_stats_fallback(fixture):
         hid = str((fixture.get("teams", {}).get("home", {}) or {}).get("id"))
         aid = str((fixture.get("teams", {}).get("away", {}) or {}).get("id"))
         if not home_stats and not away_stats:
+            print(f"FOTMOB İSTATİSTİK YOK: {home} - {away} | matchId={best.get('id')} | eşleşme={best_score:.2f}")
             return None
+
+        print(f"FOTMOB VERİSİ: {home} - {away} | eşleşme={best_score:.2f} | alan={len(home_stats)+len(away_stats)}")
         return [
             {"team": {"id": hid}, "statistics": [{"type": k, "value": v} for k, v in home_stats.items()]},
             {"team": {"id": aid}, "statistics": [{"type": k, "value": v} for k, v in away_stats.items()]},
         ]
     except Exception as e:
-        print(f"İKİNCİ KAYNAK HATASI: {e}")
+        print(f"İKİNCİ KAYNAK HATASI: {home} - {away} | {type(e).__name__}: {e}")
         return None
-
 
 def extract_stats(stats_response):
     out = {}
