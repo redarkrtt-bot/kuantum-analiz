@@ -570,6 +570,21 @@ def send_discord(result):
 
 
 
+
+def send_radar_health(message):
+    """Send a throttled diagnostic notice, distinct from a match goal signal."""
+    payload = {
+        "username": "Goal Radar",
+        "embeds": [{
+            "title": "🛠️ GOAL RADAR — SİSTEM UYARISI",
+            "description": message,
+            "footer": {"text": "Bu bir maç gol alarmı değildir; veri/çalışma durumu bildirimidir."},
+        }]
+    }
+    response = requests.post(discord_webhook, json=payload, timeout=15)
+    response.raise_for_status()
+
+
 def main():
     state = load_state()
     state.setdefault("checked", {})
@@ -680,6 +695,22 @@ def main():
 
     if not analyzed:
         print("SONUÇ: Seçilen aday için canlı istatistik verisi alınamadı; sonraki taramada başka aday seçilecek.")
+        # A separate hourly health notice makes silent data-source failure visible.
+        last_health = state.get("radar_health_last")
+        health_due = True
+        if last_health:
+            try:
+                health_due = (datetime.now(timezone.utc) - datetime.fromisoformat(last_health)).total_seconds() >= 3600
+            except Exception:
+                pass
+        if health_due:
+            send_radar_health(
+                f"Canlı maç bulundu: **{len(live)}** | Uygun aday: **{len(candidates)}** | "
+                f"Derin tarama: **{checked_details}** | İstatistik alınan: **0**.\\n"
+                "Maç alarmı üretilmedi; çünkü doğrulanabilir canlı baskı verisi alınamadı. "
+                "Bir sonraki taramada kaynaklar yeniden denenecek."
+            )
+            state["radar_health_last"] = datetime.now(timezone.utc).isoformat()
         state["last_scan"] = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "live_matches": len(live),
