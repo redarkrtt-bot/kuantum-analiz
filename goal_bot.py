@@ -358,12 +358,11 @@ def analyze(fixture, stats_response, weather=None, injuries=None, venue=None):
             weather_note = f"Normal: {temp:.1f}°C, yağış={rain:.1f}mm, rüzgar={wind:.0f}km/s"
 
     # Data quality prevents false confidence.
-    fields = [
-        hc["shots"], hc["sot"], hc["corners"], hc["attacks"],
-        ac["shots"], ac["sot"], ac["corners"], ac["attacks"]
-    ]
-    available = sum(v > 0 for v in fields)
-    data_quality = round(min(1.0, available / 8.0), 2)
+    # A reported zero is valid data (e.g. zero corners), not a missing field.
+    # Measure completeness by key presence, never by whether the value is > 0.
+    quality_keys = ("Total Shots", "Shots on Goal", "Corner Kicks", "Dangerous Attacks")
+    available = sum(key in hs for key in quality_keys) + sum(key in aws for key in quality_keys)
+    data_quality = round(available / 8.0, 2)
 
     raw_home = home_score + state_bonus - weather_penalty
     raw_away = away_score + state_bonus - weather_penalty
