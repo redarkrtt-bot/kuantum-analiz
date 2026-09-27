@@ -528,39 +528,6 @@ def send_discord(result):
     r.raise_for_status()
 
 
-def batch_fixture_details(fixtures):
-    """Fetch detailed fixture payloads for up to 20 candidates in one API call."""
-    if not fixtures:
-        return {}
-    ids = []
-    for fixture in fixtures[:20]:
-        fid = str((fixture.get("fixture") or {}).get("id") or "")
-        if fid:
-            ids.append(fid)
-    if not ids:
-        return {}
-    try:
-        response = api_get("/fixtures", {"ids": "-".join(ids)})
-    except Exception as e:
-        print(f"TOPLU DETAY HATASI: {e}")
-        return {}
-
-    by_id = {}
-    for item in response or []:
-        fid = str((item.get("fixture") or {}).get("id") or "")
-        if fid:
-            by_id[fid] = item
-    print(f"TOPLU DETAY: istenen={len(ids)} | dönen={len(by_id)}")
-    return by_id
-
-
-def fixture_stats_from_detail(detail):
-    """Read embedded /fixtures statistics from a detailed fixture response."""
-    stats = detail.get("statistics")
-    if isinstance(stats, list) and stats:
-        return stats
-    return None
-
 
 def main():
     state = load_state()
@@ -593,34 +560,38 @@ def main():
     print("ADAYLAR:", " | ".join(preview))
 
     # Broad live radar: rotate through up to 12 candidates each scan.
-    # On every 3rd scan, use ONE batched API-Football detail call (up to 20 IDs).
-    # On other scans, use the secondary source without spending API-Football quota.
+    # Every third scan allows at most ONE valid fixture-statistics request.
+    # The previous /fixtures?ids=... request is not supported by this API plan.
     scan_count = int(state.get("scan_count", 0) or 0) + 1
     state["scan_count"] = scan_count
-    use_batched_api = (scan_count % BATCH_DETAIL_EVERY_SCANS == 1) and (API_REMAINING is None or API_REMAINING > 0)
+    use_api_fallback = (scan_count % BATCH_DETAIL_EVERY_SCANS == 1) and (API_REMAINING is None or API_REMAINING > 0)
 
     scan_candidates = candidates[:MAX_DEEP_SCAN]
-    batch_details = batch_fixture_details(scan_candidates) if use_batched_api else {}
-    if use_batched_api:
-        print(f"DERİN KAYNAK: bu taramada toplu API detayı aktif | kalan_kota={API_REMAINING}")
+    if use_api_fallback:
+        print(f"DERİN KAYNAK: FotMob + tekil API yedeği aktif | kalan_kota={API_REMAINING}")
     else:
-        print("DERİN KAYNAK: ikincil canlı veri aktif | API-Football detay çağrısı yok")
+        print("DERİN KAYNAK: FotMob aktif | API-Football detay çağrısı bu taramada kapalı")
 
     analyzed = []
     missing_stats = []
     checked_details = 0
+    api_fallback_used = False
 
     for fixture in scan_candidates:
         fid = str(fixture["fixture"]["id"])
         try:
-            # Prefer the batched API payload when this is a detail scan.
-            stats_response = fixture_stats_from_detail(batch_details.get(fid, {}))
-            source = "API-BATCH" if stats_response else None
+            stats_response = _live_stats_fallback(fixture)
+            source = "FOTMOB" if stats_response else None
 
-            # Otherwise (or if the batch has no stats), try the secondary source.
-            if not stats_response:
-                stats_response = _live_stats_fallback(fixture)
-                source = "FOTMOB" if stats_response else None
+            # Use the supported single-fixture endpoint only once on quota scans.
+            if not stats_response and use_api_fallback and not api_fallback_used and (API_REMAINING is None or API_REMAINING > 0):
+                try:
+                    stats_response = api_get("/fixtures/statistics", {"fixture": fid})
+                    api_fallback_used = True
+                    source = "API-STATISTICS" if stats_response else None
+                except Exception as api_error:
+                    api_fallback_used = True
+                    print(f"API İSTATİSTİK YEDEĞİ HATASI: {fid} | {api_error}")
 
             checked_details += 1
             now_iso = datetime.now(timezone.utc).isoformat()
