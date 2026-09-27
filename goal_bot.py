@@ -615,40 +615,23 @@ def main():
         preview.append(f"{ht}-{at} ({parse_minute(f)}')")
     print("ADAYLAR:", " | ".join(preview))
 
-    # Broad live radar: rotate through up to 12 candidates each scan.
-    # Every third scan allows at most ONE valid fixture-statistics request.
-    # The previous /fixtures?ids=... request is not supported by this API plan.
+    # One quota-controlled API statistics call per run. The schedule is
+    # limited to two runs/hour so the live feed + detail call stay near 96/day
+    # on the Free plan. Never rely on the blocked FotMob JSON endpoint.
     scan_count = int(state.get("scan_count", 0) or 0) + 1
     state["scan_count"] = scan_count
-    use_api_fallback = (scan_count % BATCH_DETAIL_EVERY_SCANS == 1) and (API_REMAINING is None or API_REMAINING > 0)
-
-    scan_candidates = candidates[:MAX_DEEP_SCAN]
-    if use_api_fallback:
-        print(f"DERİN KAYNAK: FotMob + tekil API yedeği aktif | kalan_kota={API_REMAINING}")
-    else:
-        print("DERİN KAYNAK: FotMob aktif | API-Football detay çağrısı bu taramada kapalı")
-
+    scan_candidates = candidates[:1]
     analyzed = []
     missing_stats = []
     checked_details = 0
-    api_fallback_used = False
 
     for fixture in scan_candidates:
         fid = str(fixture["fixture"]["id"])
         try:
-            stats_response = _live_stats_fallback(fixture)
-            source = "FOTMOB" if stats_response else None
-
-            # Use the supported single-fixture endpoint only once on quota scans.
-            if not stats_response and use_api_fallback and not api_fallback_used and (API_REMAINING is None or API_REMAINING > 0):
-                try:
-                    stats_response = api_get("/fixtures/statistics", {"fixture": fid})
-                    api_fallback_used = True
-                    source = "API-STATISTICS" if stats_response else None
-                except Exception as api_error:
-                    api_fallback_used = True
-                    print(f"API İSTATİSTİK YEDEĞİ HATASI: {fid} | {api_error}")
-
+            if API_REMAINING is not None and API_REMAINING <= 0:
+                print(f"KOTA BİTTİ: istatistik isteği atlanıyor | fixture={fid}")
+                break
+            stats_response = api_get("/fixtures/statistics", {"fixture": fid})
             checked_details += 1
             now_iso = datetime.now(timezone.utc).isoformat()
             state.setdefault("checked", {})[fid] = now_iso
@@ -656,20 +639,17 @@ def main():
             if not stats_response:
                 missing_stats.append(fid)
                 state.setdefault("stats_failed", {})[fid] = now_iso
-                print(f"İSTATİSTİK YOK: {fid} — aday bu turda veri vermedi.")
+                print(f"API İSTATİSTİK YOK: {fid} — sonraki taramada sıradaki maç denenecek.")
                 continue
 
             state.setdefault("stats_failed", {}).pop(fid, None)
-
             provisional = analyze(fixture, stats_response)
             analyzed.append((fixture, stats_response, provisional))
             state.setdefault("recent_analysis", {})[fid] = {
                 "updated_at": now_iso,
                 "pressure": round(
                     max(provisional["pressure_home"], provisional["pressure_away"])
-                    + provisional["home_score"]
-                    + provisional["away_score"],
-                    2,
+                    + provisional["home_score"] + provisional["away_score"], 2
                 ),
                 "signal": bool(provisional["signal"]),
                 "minute": provisional["minute"],
@@ -679,13 +659,14 @@ def main():
             }
             print(
                 f"ADAY ANALİZİ: {provisional['home']} - {provisional['away']} | "
-                f"{provisional['minute']}' | kaynak={source} | kalite={provisional['data_quality']:.2f} | "
+                f"{provisional['minute']}' | kaynak=API-STATISTICS | "
+                f"kalite={provisional['data_quality']:.2f} | "
                 f"ev={provisional['home_score']:.2f} | dep={provisional['away_score']:.2f} | "
                 f"sinyal={provisional['signal']} | yön={provisional['direction']}"
             )
         except Exception as e:
             checked_details += 1
-            print(f"ADAY ANALİZ HATASI: {fid} | {e}")
+            print(f"ADAY ANALİZ HATASI: {fid} | {type(e).__name__}: {e}")
 
     print(
         f"DERİN TARAMA: kontrol={checked_details} | "
