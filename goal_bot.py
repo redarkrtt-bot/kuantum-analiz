@@ -155,7 +155,8 @@ def run():
             goals=m["hg"]+m["ag"]
             pressure=sot>=5 or (sot>=4 and shots>=12) or (sot>=3 and shots>=10 and corners>=5)
             late=m["minute"]>=65 and goals<=2 and (sot>=3 or corners>=6)
-            if not (ts and goals<=4 and abs(m["hg"]-m["ag"])<=1 and (pressure or late)):continue
+            watch=m["minute"]>=20 and goals<=3 and abs(m["hg"]-m["ag"])<=1 and (sot>=2 or shots>=8 or corners>=4)
+            if not (ts and goals<=4 and abs(m["hg"]-m["ag"])<=1 and (pressure or late or watch)):continue
             last=alerts.get(m["id"])
             if last:
                 try:
