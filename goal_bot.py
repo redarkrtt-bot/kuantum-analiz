@@ -7,7 +7,7 @@ WEBHOOK=os.environ["DISCORD_WEBHOOK"]
 SPORTSCORE="https://sportscore.com/api/v1"
 ESPN="https://site.api.espn.com/apis/site/v2/sports/soccer"
 LEAGUES=["eng.1","eng.2","esp.1","esp.2","ger.1","ger.2","ita.1","ita.2","fra.1","fra.2","ned.1","por.1","usa.1","mex.1","bra.1","arg.1","uefa.champions","uefa.europa"]
-MAX_DETAILS=12
+MAX_DETAILS=200
 COOLDOWN=25
 S=requests.Session()
 S.headers.update({"User-Agent":"Mozilla/5.0 GoalRadar/2.1","Accept":"application/json"})
@@ -125,7 +125,7 @@ def run():
                 if detail_clock:m["minute"]=detail_clock
                 if not m["minute"] or m["minute"]<=2:
                     print("CLOCK UNAVAILABLE: "+m["home"]+" - "+m["away"]+" | status="+m["status"])
-            if m["minute"] and not 1<=m["minute"]<=95:continue
+            if m["minute"] and not 1<=m["minute"]<=130:continue
             ts=match_stats(d)
             # ESPN fallback stats are available directly on the scoreboard.
             if not ts and source=="ESPN fallback":
