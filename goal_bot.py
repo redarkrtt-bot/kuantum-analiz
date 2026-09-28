@@ -97,7 +97,7 @@ def run():
     checked=sent=0
     for m in matches:
         if checked>=MAX_DETAILS:break
-        if not m["id"] or not 1<=m["minute"]<=95:continue
+        if not m["id"]:continue
         checked+=1
         try:
             if source=="SportScore":
@@ -105,6 +105,25 @@ def run():
                 d=get(f"{SPORTSCORE}/match/",{"sport":"football","slug":m["slug"]})
             else:
                 d=get(f"{ESPN}/{m['league']}/summary",{"event":m["id"]})
+            if m["minute"]==0:
+                def scan_clock(o):
+                    if isinstance(o,dict):
+                        for k,v in o.items():
+                            if str(k).lower() in ("minute","elapsed","matchminute","currentminute"):
+                                n=integer(v)
+                                if 1<=n<=120:return n
+                            n=scan_clock(v)
+                            if n:return n
+                    elif isinstance(o,list):
+                        for v in o:
+                            n=scan_clock(v)
+                            if n:return n
+                    return 0
+                m["minute"]=scan_clock(d)
+                if not m["minute"]:
+                    print("NO CLOCK: "+m["home"]+" - "+m["away"]+" | status="+m["status"])
+                    continue
+            if not 1<=m["minute"]<=95:continue
             ts=match_stats(d)
             # ESPN fallback stats are available directly on the scoreboard.
             if not ts and source=="ESPN fallback":
