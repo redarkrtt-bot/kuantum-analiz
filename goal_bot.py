@@ -89,7 +89,7 @@ def run():
     alerts=state.setdefault("alerts",{})
     try:
         matches=sportscore_live(); source="SportScore"
-        print(f"SportScore live feed: {len(matches)}")
+        print(f"SportScore live feed: {len(matches)}; sample={json.dumps(matches[:2],ensure_ascii=False)[:1800]}")
     except Exception as ex:
         print(f"SportScore failed: {type(ex).__name__}: {ex}; trying ESPN fallback")
         matches=espn_live();source="ESPN fallback"
