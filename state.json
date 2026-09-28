@@ -316,29 +316,10 @@
   "scan_count": 37,
   "radar_health_last": "2026-09-27T16:18:31.446179+00:00",
   "last_run": {
-    "at": "2026-09-28T12:42:20.547838+00:00",
-    "live": 0,
+    "at": "2026-09-28T12:43:55.013819+00:00",
+    "source": "SportScore",
+    "live": 9,
     "checked": 0,
-    "sent": 0,
-    "errors": [
-      "eng.1: HTTPError",
-      "eng.2: HTTPError",
-      "esp.1: HTTPError",
-      "esp.2: HTTPError",
-      "ger.1: HTTPError",
-      "ger.2: HTTPError",
-      "ita.1: HTTPError",
-      "ita.2: HTTPError",
-      "fra.1: HTTPError",
-      "fra.2: HTTPError",
-      "ned.1: HTTPError",
-      "por.1: HTTPError",
-      "usa.1: HTTPError",
-      "mex.1: HTTPError",
-      "bra.1: HTTPError",
-      "arg.1: HTTPError",
-      "uefa.champions: HTTPError",
-      "uefa.europa: HTTPError"
-    ]
+    "sent": 0
   }
 }
