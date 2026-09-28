@@ -124,10 +124,10 @@ def run():
                 detail_clock=scan_clock(d)
                 if detail_clock:m["minute"]=detail_clock
                 if not m["minute"] or m["minute"]<=2:
-                    print("NO CLOCK: "+m["home"]+" - "+m["away"]+" | status="+m["status"])
-                    continue
-            if not 1<=m["minute"]<=95:continue
+                    print("CLOCK UNAVAILABLE: "+m["home"]+" - "+m["away"]+" | status="+m["status"])
+            if m["minute"] and not 1<=m["minute"]<=95:continue
             ts=match_stats(d)
+            if checked==1:print("DETAIL SAMPLE: "+str(d)[:3500])
             if checked==1:print("DETAIL SAMPLE: "+str(d)[:2500])
             # ESPN fallback stats are available directly on the scoreboard.
             if not ts and source=="ESPN fallback":
