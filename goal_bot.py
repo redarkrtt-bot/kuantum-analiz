@@ -19,8 +19,11 @@ def post(title,desc,color=3066993):
     r=S.post(WEBHOOK,json={"username":"Goal Radar","embeds":[{"title":title,"description":desc[:4000],"color":color,"timestamp":now().isoformat(),"footer":{"text":"Canlı veri sinyali • gol/kazanç garantisi değildir"}}]},timeout=15); r.raise_for_status()
 def integer(v):
     if v is None:return 0
-    m=re.search(r"\d+",str(v).replace(",",""))
-    return int(m.group()) if m else 0
+    if isinstance(v,(int,float)):return int(v)
+    s=str(v).strip()
+    if re.search(r"\b(1st|2nd|first|second)\s*half\b",s,re.I):return 0
+    m=re.search(r"(\d{1,3})(?:\s*\+\s*\d{1,2})?\s*['′’]?",s)
+    return int(m.group(1)) if m else 0
 def live_status(v):
     s=str(v or "").lower()
     return any(x in s for x in ("live","in progress","1st half","2nd half","half time","1h","2h","inplay","in_play"))
@@ -139,10 +142,16 @@ def run():
             hs=next((v for n,v in allstats.items() if n in m["home"].lower() or m["home"].lower() in n),{})
             aws=next((v for n,v in allstats.items() if n in m["away"].lower() or m["away"].lower() in n),{})
             def stat(v,terms):
-                return next((x for k,x in v.items() if any(t in k for t in terms)),0)
-            shots=stat(hs,("total shots","shot","shots"))+stat(aws,("total shots","shot","shots"))
-            sot=stat(hs,("shots on target","shots on goal","sog"))+stat(aws,("shots on target","shots on goal","sog"))
-            corners=stat(hs,("corner","corners"))+stat(aws,("corner","corners"))
+                for term in terms:
+                    for k,x in v.items():
+                        if k.strip()==term:return x
+                for term in terms:
+                    for k,x in v.items():
+                        if term in k:return x
+                return 0
+            shots=stat(hs,("total shots","total_shots","shots","shot"))+stat(aws,("total shots","total_shots","shots","shot"))
+            sot=stat(hs,("shots on target","shots_on_target","shots on goal","sog"))+stat(aws,("shots on target","shots_on_target","shots on goal","sog"))
+            corners=stat(hs,("corner kicks","corner_kicks","corners","corner"))+stat(aws,("corner kicks","corner_kicks","corners","corner"))
             goals=m["hg"]+m["ag"]
             pressure=sot>=5 or (sot>=4 and shots>=12) or (sot>=3 and shots>=10 and corners>=5)
             late=m["minute"]>=65 and goals<=2 and (sot>=3 or corners>=6)
