@@ -96,7 +96,7 @@ def run():
     if not matches:
         print("No live matches returned by current free sources.")
     matches.sort(key=lambda x:x["minute"],reverse=True)
-    checked=sent=0
+    checked=sent=stats_count=0
     for m in matches:
         if checked>=MAX_DETAILS:break
         if not m["id"]:continue
@@ -127,13 +127,13 @@ def run():
                     print("CLOCK UNAVAILABLE: "+m["home"]+" - "+m["away"]+" | status="+m["status"])
             if m["minute"] and not 1<=m["minute"]<=95:continue
             ts=match_stats(d)
-            if checked==1:print("DETAIL SAMPLE: "+str(d)[:2500])
             # ESPN fallback stats are available directly on the scoreboard.
             if not ts and source=="ESPN fallback":
                 ts=[]
                 for t in (m["raw"].get("competitions") or [{}])[0].get("competitors",[]):
                     vals={str(v.get("name") or v.get("abbreviation") or "").lower():integer(v.get("displayValue")) for v in t.get("statistics",[])}
                     ts.append((t.get("team",{}).get("displayName",""),vals))
+            if ts:stats_count+=1
             allstats={}
             for name,v in ts:allstats[name.lower()]=v
             hs=next((v for n,v in allstats.items() if n in m["home"].lower() or m["home"].lower() in n),{})
@@ -157,7 +157,16 @@ def run():
             print(f"ALERT SENT: {m['id']} {m['home']} - {m['away']}")
         except Exception as ex:print(f"DETAIL ERROR {m['id']}: {type(ex).__name__}: {ex}")
         time.sleep(.15)
-    state["last_run"]={"at":now().isoformat(),"source":source,"live":len(matches),"checked":checked,"sent":sent}
+    if matches and stats_count==0:
+        last_health=state.get("health_last")
+        due=True
+        if last_health:
+            try:due=(now()-datetime.fromisoformat(last_health)).total_seconds()>=21600
+            except Exception:pass
+        if due:
+            post("🛠️ GOAL RADAR — VERİ UYARISI",f"Canlı maç bulundu: {len(matches)}. Ayrıntılı istatistik alınan: 0. Bu nedenle gol sinyali üretilmedi; veri eksikliğini tahmin gibi göstermiyoruz.",15105570)
+            state["health_last"]=now().isoformat()
+    state["last_run"]={"at":now().isoformat(),"source":source,"live":len(matches),"checked":checked,"stats_available":stats_count,"sent":sent}
     Path("state.json").write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding="utf-8")
     print(f"RUN COMPLETE: source={source} live={len(matches)} checked={checked} alerts={sent}")
 if __name__=="__main__":run()
