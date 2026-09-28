@@ -3,113 +3,139 @@ from datetime import datetime, timezone
 from pathlib import Path
 import requests
 
-WEBHOOK = os.environ["DISCORD_WEBHOOK"]
-BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
-LEAGUES = ["eng.1","eng.2","esp.1","esp.2","ger.1","ger.2","ita.1","ita.2","fra.1","fra.2","ned.1","por.1","usa.1","mex.1","bra.1","arg.1","uefa.champions","uefa.europa"]
-MAX_DETAILS = 12
-COOLDOWN = 25
-S = requests.Session()
-S.headers.update({"User-Agent":"Mozilla/5.0 GoalRadar/2.0","Accept":"application/json"})
+WEBHOOK=os.environ["DISCORD_WEBHOOK"]
+SPORTSCORE="https://sportscore.com/api/v1"
+ESPN="https://site.api.espn.com/apis/site/v2/sports/soccer"
+LEAGUES=["eng.1","eng.2","esp.1","esp.2","ger.1","ger.2","ita.1","ita.2","fra.1","fra.2","ned.1","por.1","usa.1","mex.1","bra.1","arg.1","uefa.champions","uefa.europa"]
+MAX_DETAILS=12
+COOLDOWN=25
+S=requests.Session()
+S.headers.update({"User-Agent":"Mozilla/5.0 GoalRadar/2.1","Accept":"application/json"})
 
-def now():
-    return datetime.now(timezone.utc)
-
-def get(url, params=None):
+def now(): return datetime.now(timezone.utc)
+def get(url,params=None):
     r=S.get(url,params=params,timeout=15); r.raise_for_status(); return r.json()
-
-def post(title, desc, color=3066993):
-    r=S.post(WEBHOOK,json={"username":"Goal Radar","embeds":[{"title":title,"description":desc[:4000],"color":color,"timestamp":now().isoformat(),"footer":{"text":"Ücretsiz canlı veri • sinyal garanti değildir"}}]},timeout=15)
-    r.raise_for_status()
-
+def post(title,desc,color=3066993):
+    r=S.post(WEBHOOK,json={"username":"Goal Radar","embeds":[{"title":title,"description":desc[:4000],"color":color,"timestamp":now().isoformat(),"footer":{"text":"Canlı veri sinyali • gol/kazanç garantisi değildir"}}]},timeout=15); r.raise_for_status()
 def integer(v):
-    if v is None: return 0
+    if v is None:return 0
     m=re.search(r"\d+",str(v).replace(",",""))
     return int(m.group()) if m else 0
-
-def teams(e):
-    c=(e.get("competitions") or [{}])[0]
-    h=a=None
-    for x in c.get("competitors",[]):
-        if x.get("homeAway")=="home": h=x
-        if x.get("homeAway")=="away": a=x
-    return h,a
-
-def minute(e):
-    st=e.get("status") or {}
-    return integer(st.get("displayClock") or (st.get("type") or {}).get("shortDetail"))
-
-def live(e):
-    return (e.get("status") or {}).get("type",{}).get("state")=="in"
-
-def score(x):
-    return integer(x.get("score"))
-
-def summary_stats(d):
-    out={}
-    for t in (d.get("boxscore") or {}).get("teams",[]):
-        name=(t.get("team") or {}).get("displayName","")
-        vals={}
-        for x in t.get("statistics",[]) or []:
-            label=str(x.get("label") or x.get("name") or "").lower()
-            vals[label]=integer(x.get("displayValue") or x.get("value"))
-        out[name]=vals
-    return out
-
-def find(v, terms):
-    for k,x in v.items():
-        if any(t in k for t in terms): return x
-    return 0
-
-def run():
-    try: state=json.loads(Path("state.json").read_text(encoding="utf-8"))
-    except Exception: state={}
-    alerts=state.setdefault("alerts",{})
-    events=[]; errors=[]
+def live_status(v):
+    s=str(v or "").lower()
+    return any(x in s for x in ("live","in progress","1st half","2nd half","half time","1h","2h","inplay","in_play"))
+def normalize(x):
+    home=x.get("home") or x.get("home_team") or {}
+    away=x.get("away") or x.get("away_team") or {}
+    if isinstance(home,dict): hn=home.get("name") or home.get("displayName") or home.get("teamName") or "Home"
+    else: hn=str(home or "Home")
+    if isinstance(away,dict): an=away.get("name") or away.get("displayName") or away.get("teamName") or "Away"
+    else: an=str(away or "Away")
+    hs=x.get("home_score",x.get("score_home",0)); ass=x.get("away_score",x.get("score_away",0))
+    status=x.get("status_text") or x.get("status") or x.get("state") or ""
+    clock=x.get("minute") or x.get("elapsed") or status
+    return {"id":str(x.get("id") or x.get("event_id") or x.get("slug") or ""),
+            "slug":x.get("slug") or x.get("match_slug") or "",
+            "home":hn,"away":an,"hg":integer(hs),"ag":integer(ass),
+            "minute":integer(clock),"clock":str(clock),"status":str(status),
+            "league":str(x.get("competition_name") or x.get("competition") or x.get("league") or "Canlı maç"),
+            "raw":x}
+def sportscore_live():
+    d=get(f"{SPORTSCORE}/fixtures/",{"sport":"football","status":"live","limit":200})
+    if isinstance(d,list): rows=d
+    else: rows=d.get("fixtures") or d.get("matches") or d.get("events") or []
+    return [normalize(x) for x in rows if isinstance(x,dict) and live_status(x.get("status_text") or x.get("status") or x.get("state"))]
+def espn_live():
+    out=[]
     for league in LEAGUES:
         try:
-            data=get(f"{BASE}/{league}/scoreboard")
-            events += [(league,e) for e in data.get("events",[]) if live(e)]
-        except Exception as ex:
-            errors.append(f"{league}: {type(ex).__name__}")
-    print(f"LIVE MATCHES: {len(events)}; SOURCE ERRORS: {len(errors)}")
+            d=get(f"{ESPN}/{league}/scoreboard")
+            for e in d.get("events",[]):
+                st=e.get("status") or {}
+                if (st.get("type") or {}).get("state")!="in":continue
+                c=(e.get("competitions") or [{}])[0]; h=a=None
+                for t in c.get("competitors",[]):
+                    if t.get("homeAway")=="home":h=t
+                    if t.get("homeAway")=="away":a=t
+                if not h or not a:continue
+                out.append({"id":str(e.get("id")),"slug":"","home":h["team"].get("displayName","Home"),"away":a["team"].get("displayName","Away"),"hg":integer(h.get("score")),"ag":integer(a.get("score")),"minute":integer(st.get("displayClock")),"clock":str(st.get("displayClock","")),"status":"live","league":league,"raw":e,"source":"espn"})
+        except Exception as e: print(f"ESPN {league}: {type(e).__name__}")
+    return out
+def match_stats(d):
+    # Read common stat labels from SportScore match payloads, including nested team objects.
+    teams=[]
+    def walk(obj):
+        if isinstance(obj,dict):
+            if any(k in obj for k in ("statistics","stats")) and any(k in obj for k in ("home","name","team","team_name","displayName")):teams.append(obj)
+            for v in obj.values():walk(v)
+        elif isinstance(obj,list):
+            for v in obj:walk(v)
+    walk(d)
+    out=[]
+    for t in teams:
+        name=t.get("name") or t.get("team_name") or t.get("displayName")
+        if isinstance(t.get("team"),dict):name=name or t["team"].get("name") or t["team"].get("displayName")
+        vals=t.get("statistics") or t.get("stats") or {}
+        if isinstance(vals,list):
+            vals={str(v.get("name") or v.get("label") or v.get("type") or "").lower():integer(v.get("value") or v.get("displayValue")) for v in vals if isinstance(v,dict)}
+        elif isinstance(vals,dict): vals={str(k).lower():integer(v.get("value") if isinstance(v,dict) else v) for k,v in vals.items()}
+        if name:out.append((str(name),vals))
+    return out
+def run():
+    try:state=json.loads(Path("state.json").read_text(encoding="utf-8"))
+    except Exception:state={}
+    alerts=state.setdefault("alerts",{})
+    try:
+        matches=sportscore_live(); source="SportScore"
+        print(f"SportScore live feed: {len(matches)}")
+    except Exception as ex:
+        print(f"SportScore failed: {type(ex).__name__}: {ex}; trying ESPN fallback")
+        matches=espn_live();source="ESPN fallback"
+    if not matches:
+        print("No live matches returned by current free sources.")
+    matches.sort(key=lambda x:x["minute"],reverse=True)
     checked=sent=0
-    events.sort(key=lambda x: minute(x[1]),reverse=True)
-    for league,e in events:
-        if checked>=MAX_DETAILS: break
-        m=minute(e)
-        if m<1 or m>95: continue
-        h,a=teams(e)
-        if not h or not a: continue
+    for m in matches:
+        if checked>=MAX_DETAILS:break
+        if not m["id"] or not 1<=m["minute"]<=95:continue
         checked+=1
-        eid=str(e.get("id") or "")
-        if not eid: continue
         try:
-            d=get(f"{BASE}/{league}/summary",{"event":eid})
-            stats=summary_stats(d)
-            hn=(h.get("team") or {}).get("displayName","Home")
-            an=(a.get("team") or {}).get("displayName","Away")
-            hs=stats.get(hn,{}); aws=stats.get(an,{})
-            shots=find(hs,["total shots","shots"])+find(aws,["total shots","shots"])
-            sot=find(hs,["shots on target","shots on goal"])+find(aws,["shots on target","shots on goal"])
-            corners=find(hs,["won corners","corners"])+find(aws,["won corners","corners"])
-            goals=score(h)+score(a)
-            pressure=(sot>=5 or (sot>=4 and shots>=12) or (sot>=3 and shots>=10 and corners>=5))
-            late=(m>=65 and goals<=2 and (sot>=3 or corners>=6))
-            if not (goals<=4 and abs(score(h)-score(a))<=1 and (pressure or late)): continue
-            last=alerts.get(eid)
+            if source=="SportScore":
+                if not m["slug"]:continue
+                d=get(f"{SPORTSCORE}/match/",{"sport":"football","slug":m["slug"]})
+            else:
+                d=get(f"{ESPN}/{m['league']}/summary",{"event":m["id"]})
+            ts=match_stats(d)
+            # ESPN fallback stats are available directly on the scoreboard.
+            if not ts and source=="ESPN fallback":
+                ts=[]
+                for t in (m["raw"].get("competitions") or [{}])[0].get("competitors",[]):
+                    vals={str(v.get("name") or v.get("abbreviation") or "").lower():integer(v.get("displayValue")) for v in t.get("statistics",[])}
+                    ts.append((t.get("team",{}).get("displayName",""),vals))
+            allstats={}
+            for name,v in ts:allstats[name.lower()]=v
+            hs=next((v for n,v in allstats.items() if n in m["home"].lower() or m["home"].lower() in n),{})
+            aws=next((v for n,v in allstats.items() if n in m["away"].lower() or m["away"].lower() in n),{})
+            def stat(v,terms):
+                return next((x for k,x in v.items() if any(t in k for t in terms)),0)
+            shots=stat(hs,("total shots","shot","shots"))+stat(aws,("total shots","shot","shots"))
+            sot=stat(hs,("shots on target","shots on goal","sog"))+stat(aws,("shots on target","shots on goal","sog"))
+            corners=stat(hs,("corner","corners"))+stat(aws,("corner","corners"))
+            goals=m["hg"]+m["ag"]
+            pressure=sot>=5 or (sot>=4 and shots>=12) or (sot>=3 and shots>=10 and corners>=5)
+            late=m["minute"]>=65 and goals<=2 and (sot>=3 or corners>=6)
+            if not (ts and goals<=4 and abs(m["hg"]-m["ag"])<=1 and (pressure or late)):continue
+            last=alerts.get(m["id"])
             if last:
                 try:
-                    if (now()-datetime.fromisoformat(last)).total_seconds()<COOLDOWN*60: continue
-                except Exception: pass
-            reason=f"İsabetli şut: {sot} • Şut: {shots} • Korner: {corners}"
-            post("⚽ GOAL RADAR — GOL BASKISI",f"**{league}**\\n**{hn} – {an}**\\n⏱️ {m}' | ⚽ **{score(h)}-{score(a)}**\\n📊 {reason}\\n\\nBu bir istatistik sinyalidir; gol veya kazanç garantisi değildir.")
-            alerts[eid]=now().isoformat(); sent+=1
-            print(f"ALERT SENT: {eid} {hn} - {an}")
-        except Exception as ex:
-            print(f"DETAIL ERROR {eid}: {type(ex).__name__}: {ex}")
+                    if (now()-datetime.fromisoformat(last)).total_seconds()<COOLDOWN*60:continue
+                except Exception:pass
+            post("⚽ GOAL RADAR — GOL BASKISI",f"**{m['league']}**\\n**{m['home']} – {m['away']}**\\n⏱️ {m['minute']}' ({m['clock']}) | ⚽ **{m['hg']}-{m['ag']}**\\n📊 Şut: {shots} • İsabetli şut: {sot} • Korner: {corners}\\nKaynak: {source}\\n\\nBu bir canlı istatistik sinyalidir; gol veya kazanç garantisi değildir.")
+            alerts[m["id"]]=now().isoformat();sent+=1
+            print(f"ALERT SENT: {m['id']} {m['home']} - {m['away']}")
+        except Exception as ex:print(f"DETAIL ERROR {m['id']}: {type(ex).__name__}: {ex}")
         time.sleep(.15)
-    state["last_run"]={"at":now().isoformat(),"live":len(events),"checked":checked,"sent":sent,"errors":errors[:20]}
+    state["last_run"]={"at":now().isoformat(),"source":source,"live":len(matches),"checked":checked,"sent":sent}
     Path("state.json").write_text(json.dumps(state,ensure_ascii=False,indent=2),encoding="utf-8")
-    print(f"RUN COMPLETE: live={len(events)} checked={checked} alerts={sent}")
-
-if __name__=="__main__": run()
+    print(f"RUN COMPLETE: source={source} live={len(matches)} checked={checked} alerts={sent}")
+if __name__=="__main__":run()
