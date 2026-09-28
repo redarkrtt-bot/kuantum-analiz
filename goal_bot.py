@@ -34,8 +34,10 @@ def normalize(x):
     hs=x.get("home_score",x.get("score_home",0)); ass=x.get("away_score",x.get("score_away",0))
     status=x.get("status_text") or x.get("status") or x.get("state") or ""
     clock=x.get("minute") or x.get("elapsed") or status
-    return {"id":str(x.get("id") or x.get("event_id") or x.get("slug") or ""),
-            "slug":x.get("slug") or x.get("match_slug") or "",
+    url_slug=str(x.get("url") or "").rstrip("/").split("/")[-1]
+    slug=x.get("slug") or x.get("match_slug") or url_slug
+    return {"id":str(x.get("id") or x.get("event_id") or slug or ""),
+            "slug":slug,
             "home":hn,"away":an,"hg":integer(hs),"ag":integer(ass),
             "minute":integer(clock),"clock":str(clock),"status":str(status),
             "league":str(x.get("competition_name") or x.get("competition") or x.get("league") or "Canlı maç"),
