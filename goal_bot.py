@@ -111,7 +111,7 @@ def run():
                 def scan_clock(o):
                     if isinstance(o,dict):
                         for k,v in o.items():
-                            if str(k).lower() in ("minute","elapsed","matchminute","currentminute"):
+                            if str(k).lower() in ("minute","elapsed","matchminute","currentminute","live_minute"):
                                 n=integer(v)
                                 if 1<=n<=120:return n
                             n=scan_clock(v)
@@ -127,7 +127,6 @@ def run():
                     print("CLOCK UNAVAILABLE: "+m["home"]+" - "+m["away"]+" | status="+m["status"])
             if m["minute"] and not 1<=m["minute"]<=95:continue
             ts=match_stats(d)
-            if checked==1:print("DETAIL SAMPLE: "+str(d)[:3500])
             if checked==1:print("DETAIL SAMPLE: "+str(d)[:2500])
             # ESPN fallback stats are available directly on the scoreboard.
             if not ts and source=="ESPN fallback":
