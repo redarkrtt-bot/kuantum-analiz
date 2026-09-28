@@ -27,7 +27,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check requests
       - name: Run Goal Radar
         env:
-          DISCORD_WEBHOOK: \${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: python goal_bot.py
       - name: Save radar state
         if: always()
