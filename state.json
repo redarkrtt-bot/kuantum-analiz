@@ -316,10 +316,10 @@
   "scan_count": 37,
   "radar_health_last": "2026-09-27T16:18:31.446179+00:00",
   "last_run": {
-    "at": "2026-10-06T20:52:13.458825+00:00",
+    "at": "2026-10-06T21:02:35.064627+00:00",
     "source": "SportScore",
-    "live": 9,
-    "checked": 9,
+    "live": 8,
+    "checked": 8,
     "stats_available": 0,
     "sent": 0
   },
